@@ -21,8 +21,20 @@ package org.apache.rocketmq.store;
  */
 public enum AppendMessageStatus {
     PUT_OK,
+    /**
+     * 这什么鬼错误？文件大小到顶？写到底了？？？
+     */
     END_OF_FILE,
+    /**
+     * 消息太大了
+     */
     MESSAGE_SIZE_EXCEEDED,
+    /**
+     * 消息属性太大了
+     */
     PROPERTIES_SIZE_EXCEEDED,
+    /**
+     * 未知错误
+     */
     UNKNOWN_ERROR,
 }

@@ -24,19 +24,30 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.concurrent.CopyOnWriteArrayList;
+
+import org.apache.commons.validator.Var;
 import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 
+/**
+ * 把多个mappedFile串起来....
+ */
 public class MappedFileQueue {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private static final InternalLogger LOG_ERROR = InternalLoggerFactory.getLogger(LoggerName.STORE_ERROR_LOGGER_NAME);
 
     private static final int DELETE_FILES_BATCH_MAX = 10;
 
+    /**
+     * 存储根目录
+     */
     private final String storePath;
 
+    /**
+     * 多少个mappedFile
+     */
     private final int mappedFileSize;
 
     private final CopyOnWriteArrayList<MappedFile> mappedFiles = new CopyOnWriteArrayList<MappedFile>();
@@ -55,6 +66,11 @@ public class MappedFileQueue {
         this.allocateMappedFileService = allocateMappedFileService;
     }
 
+    /**
+     * 自我检查
+     * 其实就是检查一下文件的命名是不是有问题
+     * 拿当前文件和前一个文件的名称(代表着改文件的首个消息的偏移量)相减，判断其大小是不是跟我们规定的一个文件的大小相等
+     */
     public void checkSelf() {
 
         if (!this.mappedFiles.isEmpty()) {
@@ -74,6 +90,9 @@ public class MappedFileQueue {
         }
     }
 
+    /**
+     * 根据时间戳去查找对应的文件
+     */
     public MappedFile getMappedFileByTime(final long timestamp) {
         Object[] mfs = this.copyMappedFiles(0);
 
@@ -101,17 +120,26 @@ public class MappedFileQueue {
         return mfs;
     }
 
+    /**
+     * 其实就是清除offset后面的所有文件
+     *     f
+     * | f1 | f2 | f3 | f4 | f5 | f6 |
+     */
     public void truncateDirtyFiles(long offset) {
         List<MappedFile> willRemoveFiles = new ArrayList<MappedFile>();
 
         for (MappedFile file : this.mappedFiles) {
             long fileTailOffset = file.getFileFromOffset() + this.mappedFileSize;
+            // 如果这个文件的最大迁移量 > 参数位点
             if (fileTailOffset > offset) {
+                // 如果这个参数位点也刚好在这个文件内
+                // 那么就重置这个文件，清除掉offset后的数据
                 if (offset >= file.getFileFromOffset()) {
                     file.setWrotePosition((int) (offset % this.mappedFileSize));
                     file.setCommittedPosition((int) (offset % this.mappedFileSize));
                     file.setFlushedPosition((int) (offset % this.mappedFileSize));
                 } else {
+                    // 否则就直接删掉这个文件
                     file.destroy(1000);
                     willRemoveFiles.add(file);
                 }
@@ -128,6 +156,7 @@ public class MappedFileQueue {
             Iterator<MappedFile> iterator = files.iterator();
             while (iterator.hasNext()) {
                 MappedFile cur = iterator.next();
+                // 还做了个校验 要不在列表里面才删...
                 if (!this.mappedFiles.contains(cur)) {
                     iterator.remove();
                     log.info("This mappedFile {} is not contained by mappedFiles, so skip it.", cur.getFileName());
@@ -148,6 +177,7 @@ public class MappedFileQueue {
         File dir = new File(this.storePath);
         File[] files = dir.listFiles();
         if (files != null) {
+            // 升序排序 很有意思 问题是按什么的升序
             // ascending order
             Arrays.sort(files);
             for (File file : files) {
@@ -160,7 +190,7 @@ public class MappedFileQueue {
 
                 try {
                     MappedFile mappedFile = new MappedFile(file.getPath(), mappedFileSize);
-
+                    // 相当于设置到结尾
                     mappedFile.setWrotePosition(this.mappedFileSize);
                     mappedFile.setFlushedPosition(this.mappedFileSize);
                     mappedFile.setCommittedPosition(this.mappedFileSize);
@@ -191,18 +221,24 @@ public class MappedFileQueue {
         return 0;
     }
 
+    /**
+     * 其实这个方法的意义 应该是 给我一个 要写的偏移位点 我返回一个对应的文件给你 你就可以在这个文件直接写数据了
+     */
     public MappedFile getLastMappedFile(final long startOffset, boolean needCreate) {
         long createOffset = -1;
         MappedFile mappedFileLast = getLastMappedFile();
 
+        // 算出新建的这个文件的开头偏移量是多少
         if (mappedFileLast == null) {
             createOffset = startOffset - (startOffset % this.mappedFileSize);
         }
 
+        // 如果最后一个文件存在 且 最后一个文件写满了 那就意味着你得创建个新的了
         if (mappedFileLast != null && mappedFileLast.isFull()) {
             createOffset = mappedFileLast.getFileFromOffset() + this.mappedFileSize;
         }
 
+        // 看来需要创建一个新文件了
         if (createOffset != -1 && needCreate) {
             String nextFilePath = this.storePath + File.separator + UtilAll.offset2FileName(createOffset);
             String nextNextFilePath = this.storePath + File.separator
@@ -240,6 +276,7 @@ public class MappedFileQueue {
     public MappedFile getLastMappedFile() {
         MappedFile mappedFileLast = null;
 
+        // 特么 搞一个while true???就为了避开这个索引越界？？什么奇怪的代码
         while (!this.mappedFiles.isEmpty()) {
             try {
                 mappedFileLast = this.mappedFiles.get(this.mappedFiles.size() - 1);
@@ -258,6 +295,7 @@ public class MappedFileQueue {
     public boolean resetOffset(long offset) {
         MappedFile mappedFileLast = getLastMappedFile();
 
+        // 这个地方应该是做个限制 如果你这个offset 与 当前的最末尾已写的offset差距过大 就不让你删...暂时是写死的 不能超过两个文件
         if (mappedFileLast != null) {
             long lastOffset = mappedFileLast.getFileFromOffset() +
                 mappedFileLast.getWrotePosition();
@@ -606,5 +644,12 @@ public class MappedFileQueue {
 
     public void setCommittedWhere(final long committedWhere) {
         this.committedWhere = committedWhere;
+    }
+
+
+    public static void main(String[] args) {
+        File[] files = {new File("12345"), new File("12345678"),new File("212345678")};
+        Arrays.sort(files);
+        System.out.println(files);
     }
 }

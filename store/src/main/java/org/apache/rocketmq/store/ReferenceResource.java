@@ -26,6 +26,7 @@ public abstract class ReferenceResource {
 
     public synchronized boolean hold() {
         if (this.isAvailable()) {
+            // 初始值为0 所以这里引用 应该是拿到 1 或者大于 1
             if (this.refCount.getAndIncrement() > 0) {
                 return true;
             } else {

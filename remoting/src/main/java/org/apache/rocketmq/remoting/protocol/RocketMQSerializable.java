@@ -115,8 +115,9 @@ public class RocketMQSerializable {
     }
 
     private static int calTotalLen(int remark, int ext) {
-        // int code(~32767)
-        int length = 2
+        int length =
+            // int code(~32767)
+            2
             // LanguageCode language
             + 1
             // int version(~32767)

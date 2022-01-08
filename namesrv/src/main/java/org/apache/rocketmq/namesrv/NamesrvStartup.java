@@ -54,7 +54,9 @@ public class NamesrvStartup {
     public static NamesrvController main0(String[] args) {
 
         try {
+            // 创建命名服务控制器
             NamesrvController controller = createNamesrvController(args);
+            // 启动控制器
             start(controller);
             String tip = "The Name Server boot success. serializeType=" + RemotingCommand.getSerializeTypeConfigInThisServer();
             log.info(tip);
@@ -108,8 +110,7 @@ public class NamesrvStartup {
         MixAll.properties2Object(ServerUtil.commandLine2Properties(commandLine), namesrvConfig);
 
         if (null == namesrvConfig.getRocketmqHome()) {
-            System.out.printf("Please set the %s variable in your environment to match the location of the RocketMQ installation%n", MixAll.ROCKETMQ_HOME_ENV);
-            System.exit(-2);
+            namesrvConfig.setRocketmqHome("/Users/vate/softcache/workspace_java/mines/rocketmq/distribution");
         }
 
         LoggerContext lc = (LoggerContext) LoggerFactory.getILoggerFactory();

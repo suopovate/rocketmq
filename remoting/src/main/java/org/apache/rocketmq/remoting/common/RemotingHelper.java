@@ -76,6 +76,10 @@ public class RemotingHelper {
                 socketChannel.socket().setSoTimeout((int) timeoutMillis);
 
                 ByteBuffer byteBufferRequest = request.encode();
+                // 这一整段其实就是为了把请求字节 发现给接收端
+                // 但是因为某些bug，所以他这里弄了个循环去判断...
+                // 看样子是一次性发不完 可能太大了？所以会分次数发，但是避免卡死，
+                // 所以他会有个超时设置
                 while (byteBufferRequest.hasRemaining()) {
                     int length = socketChannel.write(byteBufferRequest);
                     if (length > 0) {

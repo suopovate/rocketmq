@@ -144,11 +144,12 @@ public class RemotingCommand {
     public static RemotingCommand decode(final ByteBuffer byteBuffer) {
         int length = byteBuffer.limit();
         int oriHeaderLen = byteBuffer.getInt();
+        // 整个请求流中，高8位是用来记录协议类型的
         int headerLength = getHeaderLength(oriHeaderLen);
 
         byte[] headerData = new byte[headerLength];
         byteBuffer.get(headerData);
-
+        // todo by vate 10.26
         RemotingCommand cmd = headerDecode(headerData, getProtocolType(oriHeaderLen));
 
         int bodyLength = length - 4 - headerLength;

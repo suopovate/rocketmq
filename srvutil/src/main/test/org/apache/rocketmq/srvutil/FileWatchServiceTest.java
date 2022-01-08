@@ -83,6 +83,7 @@ public class FileWatchServiceTest {
             new FileWatchService.Listener() {
                 @Override
                 public void onChanged(String path) {
+                    // 当文件改变时，才会增加信号量，如果你删除已在监听的文件，应该不会调到这里来，因为文件被删除了
                     waitSemaphore.release();
                 }
             });

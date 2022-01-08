@@ -36,7 +36,14 @@ import org.apache.rocketmq.logging.InternalLoggerFactory;
 public class FileWatchService extends ServiceThread {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.COMMON_LOGGER_NAME);
 
+
+    /**
+     * 需要被监听的文件的路径
+     */
     private final List<String> watchFiles;
+    /**
+     * 文件当前内容的md5值
+     */
     private final List<String> fileCurrentHash;
     private final Listener listener;
     private static final int WATCH_INTERVAL = 500;
