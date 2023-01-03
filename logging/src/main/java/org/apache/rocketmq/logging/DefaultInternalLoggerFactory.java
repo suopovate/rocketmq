@@ -22,15 +22,18 @@ import org.apache.rocketmq.logging.inner.Logger;
 import java.util.HashMap;
 import java.util.Map;
 
-public class InnerLoggerFactory extends InternalLoggerFactory {
+/**
+ * 默认的内部日志实现工厂
+ */
+public class DefaultInternalLoggerFactory extends InternalLoggerFactory {
 
-    public InnerLoggerFactory() {
+    public DefaultInternalLoggerFactory() {
         doRegister();
     }
 
     @Override
     protected InternalLogger getLoggerInstance(String name) {
-        return new InnerLogger(name);
+        return new DefaultInternalLogger(name);
     }
 
     @Override
@@ -43,11 +46,11 @@ public class InnerLoggerFactory extends InternalLoggerFactory {
         Logger.getRepository().shutdown();
     }
 
-    public static class InnerLogger implements InternalLogger {
+    public static class DefaultInternalLogger implements InternalLogger {
 
         private Logger logger;
 
-        public InnerLogger(String name) {
+        public DefaultInternalLogger(String name) {
             logger = Logger.getLogger(name);
         }
 

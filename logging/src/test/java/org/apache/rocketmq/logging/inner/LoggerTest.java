@@ -18,7 +18,7 @@
 package org.apache.rocketmq.logging.inner;
 
 import org.apache.rocketmq.logging.BasicLoggerTest;
-import org.apache.rocketmq.logging.InnerLoggerFactory;
+import org.apache.rocketmq.logging.DefaultInternalLoggerFactory;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.junit.After;
@@ -35,7 +35,7 @@ public class LoggerTest extends BasicLoggerTest {
 
     @Before
     public void init() {
-        InternalLoggerFactory.setCurrentLoggerType(InnerLoggerFactory.LOGGER_INNER);
+        InternalLoggerFactory.setCurrentLoggerType(DefaultInternalLoggerFactory.LOGGER_INNER);
     }
 
     @Test

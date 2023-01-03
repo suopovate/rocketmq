@@ -29,7 +29,7 @@ import org.junit.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 
-public class InnerLoggerFactoryTest extends BasicLoggerTest {
+public class DefaultInternalLoggerFactoryTest extends BasicLoggerTest {
 
     private ByteArrayOutputStream byteArrayOutputStream;
 
@@ -62,13 +62,13 @@ public class InnerLoggerFactoryTest extends BasicLoggerTest {
     public void testInnerLoggerFactory() {
         InternalLoggerFactory.setCurrentLoggerType(InternalLoggerFactory.LOGGER_INNER);
 
-        InternalLogger logger1 = InnerLoggerFactory.getLogger(LOGGER);
+        InternalLogger logger1 = DefaultInternalLoggerFactory.getLogger(LOGGER);
         InternalLogger logger = InternalLoggerFactory.getLogger(LOGGER);
 
         Assert.assertTrue(logger.getName().equals(logger1.getName()));
 
-        InternalLogger logger2 = InnerLoggerFactory.getLogger(InnerLoggerFactoryTest.class);
-        InnerLoggerFactory.InnerLogger logger3 = (InnerLoggerFactory.InnerLogger) logger2;
+        InternalLogger logger2 = DefaultInternalLoggerFactory.getLogger(DefaultInternalLoggerFactoryTest.class);
+        DefaultInternalLoggerFactory.DefaultInternalLogger logger3 = (DefaultInternalLoggerFactory.DefaultInternalLogger) logger2;
 
         logger.info("innerLogger inner info Message");
         logger.error("innerLogger inner error Message", new RuntimeException());

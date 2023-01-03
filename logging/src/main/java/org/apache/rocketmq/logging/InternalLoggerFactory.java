@@ -67,7 +67,7 @@ public abstract class InternalLoggerFactory {
             //ignore
         }
         try {
-            new InnerLoggerFactory();
+            new DefaultInternalLoggerFactory();
         } catch (Throwable e) {
             //ignore
         }
