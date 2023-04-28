@@ -17,6 +17,9 @@
 package org.apache.rocketmq.common.consumer;
 
 public enum ConsumeFromWhere {
+    /**
+     * 每次从最新的Offset开始
+     */
     CONSUME_FROM_LAST_OFFSET,
 
     @Deprecated
@@ -25,6 +28,12 @@ public enum ConsumeFromWhere {
     CONSUME_FROM_MIN_OFFSET,
     @Deprecated
     CONSUME_FROM_MAX_OFFSET,
+    /**
+     * 从第一个位点
+     */
     CONSUME_FROM_FIRST_OFFSET,
+    /**
+     * 从某个时间点开始
+     */
     CONSUME_FROM_TIMESTAMP,
 }

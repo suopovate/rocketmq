@@ -43,6 +43,7 @@ public class StoreCheckpoint {
 
         this.randomAccessFile = new RandomAccessFile(file, "rw");
         this.fileChannel = this.randomAccessFile.getChannel();
+        // 只映射了文件开头的一页 4K，到内存
         this.mappedByteBuffer = fileChannel.map(MapMode.READ_WRITE, 0, MappedFile.OS_PAGE_SIZE);
 
         if (fileExists) {

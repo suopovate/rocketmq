@@ -123,6 +123,8 @@ public class DefaultLitePullConsumer extends ClientConfig implements LitePullCon
     private long pullThresholdForAll = 10000;
 
     /**
+     * span = 跨度
+     *
      * Consume max span offset.
      */
     private int consumeMaxSpan = 2000;

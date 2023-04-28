@@ -31,6 +31,7 @@ public class AppendMessageResult {
     // Message storage timestamp
     private long storeTimestamp;
     // Consume queue's offset(step by one)
+    // 由此就知道，在队列中，消息的位置，是在写入cml的时候确认的(加锁串行)，所以我们在保证消息写入cml是时间有序的情况下，也能保证队列中，消息也是时间有序的。
     private long logicsOffset;
     private long pagecacheRT = 0;
 

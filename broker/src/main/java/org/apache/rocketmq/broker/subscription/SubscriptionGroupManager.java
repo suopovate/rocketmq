@@ -31,6 +31,14 @@ import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.common.subscription.SubscriptionGroupConfig;
 import org.apache.rocketmq.remoting.protocol.RemotingSerializable;
 
+/**
+ * 消费者组管理 管理了当前bk中的所有 消费者组
+ * 核心思路：
+ * 会将消费者组信息，保存在本地文件中，同时在启动时，也会加载一系列系统消费者组
+ *
+ * 📢：在查找消费者组时，如果设置可以自动创建消费者组，就会自动创建
+ *     每个bk互相之间是不会做通信的，除了主从同步(ha)，所以bk只能感知到自己有哪些消费者组，以及它们的消费进度
+ */
 public class SubscriptionGroupManager extends ConfigManager {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.BROKER_LOGGER_NAME);
 
@@ -120,6 +128,7 @@ public class SubscriptionGroupManager extends ConfigManager {
     public SubscriptionGroupConfig findSubscriptionGroupConfig(final String group) {
         SubscriptionGroupConfig subscriptionGroupConfig = this.subscriptionGroupTable.get(group);
         if (null == subscriptionGroupConfig) {
+            // 自动创建订阅组
             if (brokerController.getBrokerConfig().isAutoCreateSubscriptionGroup() || MixAll.isSysConsumerGroup(group)) {
                 subscriptionGroupConfig = new SubscriptionGroupConfig();
                 subscriptionGroupConfig.setGroupName(group);

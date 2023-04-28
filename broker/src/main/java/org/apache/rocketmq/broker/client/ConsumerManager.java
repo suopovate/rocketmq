@@ -33,6 +33,11 @@ import org.apache.rocketmq.common.protocol.heartbeat.SubscriptionData;
 import org.apache.rocketmq.remoting.common.RemotingHelper;
 import org.apache.rocketmq.remoting.common.RemotingUtil;
 
+/**
+ * 消费者管理，这些信息不会持久化，只保存在内存里
+ *
+ * 数据来源是消费者实例发送的心跳，注册上来的。
+ */
 public class ConsumerManager {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.BROKER_LOGGER_NAME);
     private static final long CHANNEL_EXPIRED_TIMEOUT = 1000 * 120;
@@ -95,10 +100,14 @@ public class ConsumerManager {
         }
     }
 
+    /**
+     * 这里有个问题，假如同组的多个消费者，不同的订阅topic，就会导致消息消费出问题，因为这里只会保存最新的一个心跳拿到的消费者的订阅情况，导致订阅关系不一致
+     */
     public boolean registerConsumer(final String group, final ClientChannelInfo clientChannelInfo,
         ConsumeType consumeType, MessageModel messageModel, ConsumeFromWhere consumeFromWhere,
         final Set<SubscriptionData> subList, boolean isNotifyConsumerIdsChangedEnable) {
 
+        // 这里考虑到了并发put的情况
         ConsumerGroupInfo consumerGroupInfo = this.consumerTable.get(group);
         if (null == consumerGroupInfo) {
             ConsumerGroupInfo tmp = new ConsumerGroupInfo(group, consumeType, messageModel, consumeFromWhere);
@@ -106,12 +115,16 @@ public class ConsumerManager {
             consumerGroupInfo = prev != null ? prev : tmp;
         }
 
+        // 更新消费者组,这个正常情况下，只有你客户端第一次连接才有效
+        // 如果同一个连接 第一次 第二次 出现了 客户端id的变更 那被认为是bug
         boolean r1 =
             consumerGroupInfo.updateChannel(clientChannelInfo, consumeType, messageModel,
                 consumeFromWhere);
+        // 更新topic的订阅情况(topic的变化，或者topic消息过滤的变化)
         boolean r2 = consumerGroupInfo.updateSubscription(subList);
 
         if (r1 || r2) {
+            // 通知这个组下的所有消费者，这个topic的订阅关系变了！
             if (isNotifyConsumerIdsChangedEnable) {
                 this.consumerIdsChangeListener.handle(ConsumerGroupEvent.CHANGE, group, consumerGroupInfo.getAllChannel());
             }

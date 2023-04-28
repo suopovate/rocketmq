@@ -24,6 +24,10 @@ import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.remoting.exception.RemotingException;
 
 /**
+ * 对外的一个Mq消费者抽象，拉取消费模式。
+ *
+ * 这种是纯粹的拉模式，即对于用户而言，也是拉，用户需要手动来拉消息，纯手动控制消息的拉取，消息位点的提交。
+ *
  * Pulling consumer interface
  */
 public interface MQPullConsumer extends MQConsumer {

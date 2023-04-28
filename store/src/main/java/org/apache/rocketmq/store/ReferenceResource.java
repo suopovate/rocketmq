@@ -44,10 +44,14 @@ public abstract class ReferenceResource {
     public void shutdown(final long intervalForcibly) {
         if (this.available) {
             this.available = false;
+            // 记录首次申请关闭的时间，可能并未完全关闭，因为可能有其他地方引用本资源
             this.firstShutdownTimestamp = System.currentTimeMillis();
             this.release();
         } else if (this.getRefCount() > 0) {
+            // 如果第一次调用关闭 和 本次调用 超过了强制规定时间 就强行关闭 否则只能
             if ((System.currentTimeMillis() - this.firstShutdownTimestamp) >= intervalForcibly) {
+                // 强行把引用计数设为很大的负数...
+                // 这样release方法才可以执行清除操作
                 this.refCount.set(-1000 - this.getRefCount());
                 this.release();
             }

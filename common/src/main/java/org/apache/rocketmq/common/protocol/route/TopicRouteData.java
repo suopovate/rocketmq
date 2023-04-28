@@ -25,10 +25,28 @@ import java.util.HashMap;
 import java.util.List;
 import org.apache.rocketmq.remoting.protocol.RemotingSerializable;
 
+/**
+ * 这些信息是从ns服务拉下来的，ns的数据是各个bk传上去的
+ */
 public class TopicRouteData extends RemotingSerializable {
+    /**
+     * bk名称:队列数;bk名称:队列数;bk名称:队列数
+     * 一般都是Null，估计没用上吧
+     */
+    // todo vate: 看看这个值干嘛的 2023-02-15 15:21:59
     private String orderTopicConf;
+    /**
+     * topic下队列信息
+     * 每一个QueueData对象，对应着 一个bk中 当前topic的所有队列
+     */
     private List<QueueData> queueDatas;
+    /**
+     * 这个topic存在于这些bk上
+     */
     private List<BrokerData> brokerDatas;
+    /**
+     * 记录一下，每个bk支持的过滤服务，后面list内容也是bk的地址
+     */
     private HashMap<String/* brokerAddr */, List<String>/* Filter Server */> filterServerTable;
 
     public TopicRouteData cloneTopicRouteData() {

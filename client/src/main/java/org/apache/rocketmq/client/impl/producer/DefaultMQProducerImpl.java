@@ -99,13 +99,22 @@ import org.apache.rocketmq.remoting.exception.RemotingTooMuchRequestException;
 public class DefaultMQProducerImpl implements MQProducerInner {
     private final InternalLogger log = ClientLogger.getLog();
     private final Random random = new Random();
+    /**
+     * 生产者配置
+     */
     private final DefaultMQProducer defaultMQProducer;
     private final ConcurrentMap<String/* topic */, TopicPublishInfo> topicPublishInfoTable =
         new ConcurrentHashMap<String, TopicPublishInfo>();
     private final ArrayList<SendMessageHook> sendMessageHookList = new ArrayList<SendMessageHook>();
     private final ArrayList<EndTransactionHook> endTransactionHookList = new ArrayList<EndTransactionHook>();
     private final RPCHook rpcHook;
+    /**
+     * 异步发送消息用到的线程池队列
+     */
     private final BlockingQueue<Runnable> asyncSenderThreadPoolQueue;
+    /**
+     * 异步发送消息的线程池
+     */
     private final ExecutorService defaultAsyncSenderExecutor;
     private final Timer timer = new Timer("RequestHouseKeepingService", true);
     protected BlockingQueue<Runnable> checkRequestQueue;
@@ -699,6 +708,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         TopicPublishInfo topicPublishInfo = this.topicPublishInfoTable.get(topic);
         if (null == topicPublishInfo || !topicPublishInfo.ok()) {
             this.topicPublishInfoTable.putIfAbsent(topic, new TopicPublishInfo());
+            // 先尝试看topic是否已经存在
             this.mQClientFactory.updateTopicRouteInfoFromNameServer(topic);
             topicPublishInfo = this.topicPublishInfoTable.get(topic);
         }
@@ -706,6 +716,10 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         if (topicPublishInfo.isHaveTopicRouterInfo() || topicPublishInfo.ok()) {
             return topicPublishInfo;
         } else {
+            // 走到这里的话，就是topic不存在，那就使用默认topic的路由信息(队列信息)，来填充 topic
+            // 假如有多个bk的话会咋样呢？当然是利用各个bk自身的默认队列信息来创建topicPublishInfo信息，假如某个bk不提供默认队列创建，
+            // 那这个 topicPublishInfo 就不会包含这个bk的队列信息，客户端发送消息时，也不会发到这个bk上去...
+            // 📢：所以正常情况，所有bk要么都支持，要么都不支持自动创建topic，如果你部分支持，就会出现不支持的bk可能永远都不会收到该topic消息的情况出现。
             this.mQClientFactory.updateTopicRouteInfoFromNameServer(topic, true, this.defaultMQProducer);
             topicPublishInfo = this.topicPublishInfoTable.get(topic);
             return topicPublishInfo;
@@ -1146,12 +1160,13 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         if (topicPublishInfo != null && topicPublishInfo.ok()) {
             MessageQueue mq = null;
             try {
+                // 获取到topic下的所有队列：整个集群下所有bk下，该topic的队列
                 List<MessageQueue> messageQueueList =
                     mQClientFactory.getMQAdminImpl().parsePublishMessageQueues(topicPublishInfo.getMessageQueueList());
                 Message userMessage = MessageAccessor.cloneMessage(msg);
                 String userTopic = NamespaceUtil.withoutNamespace(userMessage.getTopic(), mQClientFactory.getClientConfig().getNamespace());
                 userMessage.setTopic(userTopic);
-
+                // 由应用程序决定使用哪个mq来发送消息
                 mq = mQClientFactory.getClientConfig().queueWithNamespace(selector.select(messageQueueList, userMessage, arg));
             } catch (Throwable e) {
                 throw new MQClientException("select message queue threw exception.", e);

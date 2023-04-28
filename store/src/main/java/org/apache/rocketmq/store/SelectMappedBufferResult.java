@@ -18,12 +18,22 @@ package org.apache.rocketmq.store;
 
 import java.nio.ByteBuffer;
 
+/**
+ * select有查询的意思,选择，查询
+ */
 public class SelectMappedBufferResult {
 
+    // 查询结果的起始位点，cml中全局的位点
     private final long startOffset;
 
+    /**
+     * 跟下面那个Mf对应的，这个mf的buffer的子集(具体多大，得看这次查询对应的的数据有多少)
+     */
     private final ByteBuffer byteBuffer;
 
+    /**
+     * 可读的数据大小
+     */
     private int size;
 
     private MappedFile mappedFile;

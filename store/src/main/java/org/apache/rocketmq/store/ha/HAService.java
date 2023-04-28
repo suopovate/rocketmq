@@ -44,12 +44,22 @@ import org.apache.rocketmq.store.PutMessageStatus;
 public class HAService {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 
+
+    /**
+     * 连接数统计
+     */
     private final AtomicInteger connectionCount = new AtomicInteger(0);
 
+    /**
+     * 连接列表
+     */
     private final List<HAConnection> connectionList = new LinkedList<>();
 
     private final AcceptSocketService acceptSocketService;
 
+    /**
+     * 消息存储引擎
+     */
     private final DefaultMessageStore defaultMessageStore;
 
     private final WaitNotifyObject waitNotifyObject = new WaitNotifyObject();

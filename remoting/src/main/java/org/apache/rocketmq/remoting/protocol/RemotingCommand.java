@@ -31,6 +31,11 @@ import org.apache.rocketmq.remoting.exception.RemotingCommandException;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 
+/**
+ * 请求、响应 都是用这玩意
+ *
+ * @see org.apache.rocketmq.remoting.netty.NettyEncoder
+ */
 public class RemotingCommand {
     public static final String SERIALIZE_TYPE_PROPERTY = "rocketmq.serialize.type";
     public static final String SERIALIZE_TYPE_ENV = "ROCKETMQ_SERIALIZE_TYPE";
@@ -243,12 +248,16 @@ public class RemotingCommand {
             return null;
         }
 
+        // 从这里可以看出，extFields 在传输的时候 = 自定义请求头
         if (this.extFields != null) {
 
             Field[] fields = getClazzFields(classHeader);
             for (Field field : fields) {
+                // 细节，排除掉非静态的字段
                 if (!Modifier.isStatic(field.getModifiers())) {
                     String fieldName = field.getName();
+                    // 又一个细节，排除thisxxx...真的会拿到this??this不是方法参数第一个默认参数吗？...难道不是一个形参?
+                    // todo vate: 反射迭代字段时，排除了this，很奇怪 2023-01-05 14:35:35
                     if (!fieldName.startsWith("this")) {
                         try {
                             String value = this.extFields.get(fieldName);

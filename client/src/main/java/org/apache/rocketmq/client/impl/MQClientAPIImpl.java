@@ -164,6 +164,9 @@ import org.apache.rocketmq.remoting.protocol.LanguageCode;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.remoting.protocol.RemotingSerializable;
 
+/**
+ * 封装了所有真正执行远端API调用的逻辑
+ */
 public class MQClientAPIImpl {
 
     private final static InternalLogger log = ClientLogger.getLog();
@@ -229,6 +232,9 @@ public class MQClientAPIImpl {
         return nameSrvAddr;
     }
 
+    /**
+     * 更新下本地的ns服务的地址
+     */
     public void updateNameServerAddressList(final String addrs) {
         String[] addrArray = addrs.split(";");
         List<String> list = Arrays.asList(addrArray);
@@ -2221,6 +2227,9 @@ public class MQClientAPIImpl {
         throw new MQClientException(response.getCode(), response.getRemark());
     }
 
+    /**
+     * 检查用户的消息订阅配置是否合法，主要就是检查下如果非tag过滤，的情况下，过滤语法是否合法
+     */
     public void checkClientInBroker(final String brokerAddr, final String consumerGroup,
         final String clientId, final SubscriptionData subscriptionData,
         final long timeoutMillis)

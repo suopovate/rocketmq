@@ -125,6 +125,11 @@ public class BrokerConfig {
     private long waitTimeMillsInHeartbeatQueue = 31 * 1000;
     private long waitTimeMillsInTransactionQueue = 3 * 1000;
 
+    /**
+     * 没用的
+     * 应该是个用来标识系统的启动时间的，系统启动完成会设置这个？
+     * 看作用是如果发送的消息收到的时候，消息存储服务(其实就是当前时间)，早于这个时间就不接受消息的写入
+     */
     private long startAcceptSendRequestTimeStamp = 0L;
 
     private boolean traceOn = true;

@@ -27,6 +27,12 @@ import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.store.MappedFile;
 
+/**
+ * 索引文件就是一个大型的 HashMap
+ * 分成两块
+ * 1. 存储hashSlot数组
+ * 2. 存储具体的索引节点链表
+ */
 public class IndexFile {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private static int hashSlotSize = 4;
@@ -106,8 +112,12 @@ public class IndexFile {
                     slotValue = invalidIndex;
                 }
 
+                // 这里的话，存的是秒，且位数是32位
+                // 为啥不存毫秒？因为毫秒是13位，原因是为了省空间。
+                // 为什么是秒/32位？因为unix时间戳，从1970年开始那个，现在都是32位表示时间戳的秒，规定是这样。
                 long timeDiff = storeTimestamp - this.indexHeader.getBeginTimestamp();
 
+                // 这里会丢失毫秒级别的精度，不过对于查询问题不大，因为他只提供秒级精度查询...
                 timeDiff = timeDiff / 1000;
 
                 if (this.indexHeader.getBeginTimestamp() <= 0) {
@@ -129,6 +139,8 @@ public class IndexFile {
 
                 this.mappedByteBuffer.putInt(absSlotPos, this.indexHeader.getIndexCount());
 
+                // ???? <= 1??? 那第一个消息进来 这里是 0 第二个消息进来 这里是 1 ，这里是有Bug吧？？？
+                // 妈的 这个值，初始就是 1
                 if (this.indexHeader.getIndexCount() <= 1) {
                     this.indexHeader.setBeginPhyOffset(phyOffset);
                     this.indexHeader.setBeginTimestamp(storeTimestamp);
@@ -188,6 +200,14 @@ public class IndexFile {
         return result;
     }
 
+    /**
+     * @param phyOffsets 调用方创建的用于存储查询结果的容器
+     * @param key 消息的key
+     * @param maxNum 最大要查询的消息数目
+     * @param begin 开始时间
+     * @param end 结束时间
+     * @param lock 是否加锁 弃用了
+     */
     public void selectPhyOffset(final List<Long> phyOffsets, final String key, final int maxNum,
         final long begin, final long end, boolean lock) {
         if (this.mappedFile.hold()) {
@@ -208,11 +228,12 @@ public class IndexFile {
                 // fileLock = null;
                 // }
 
+                // 妈的 由于它的indexConut初始值设为1，所以如果 ic = 1 意味着为空...，不知道哪个傻逼写的
                 if (slotValue <= invalidIndex || slotValue > this.indexHeader.getIndexCount()
                     || this.indexHeader.getIndexCount() <= 1) {
                 } else {
                     for (int nextIndexToRead = slotValue; ; ) {
-                        if (phyOffsets.size() >= maxNum) {
+                        if (phyOffsets .size() >= maxNum) {
                             break;
                         }
 
@@ -263,4 +284,5 @@ public class IndexFile {
             }
         }
     }
+
 }

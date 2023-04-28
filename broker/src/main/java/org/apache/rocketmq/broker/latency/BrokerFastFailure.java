@@ -62,6 +62,9 @@ public class BrokerFastFailure {
         }, 1000, 10, TimeUnit.MILLISECONDS);
     }
 
+    /**
+     * 我觉得这个名字不合理，那些请求不是过期，只是因为你服务端忙不过来...
+     */
     private void cleanExpiredRequest() {
         while (this.brokerController.getMessageStore().isOSPageCacheBusy()) {
             try {

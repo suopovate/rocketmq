@@ -16,6 +16,11 @@
  */
 package org.apache.rocketmq.client.consumer.listener;
 
+/**
+ * 这个是我们消费者实现，可以返回的一个状态值，如成功、或者需要挂起队列一会儿
+ *
+ * 注意这里很有意思，它不是针对某个消息进行延迟，而是整个队列都延迟，为什么？因为是顺序消费模式，单个队列的消息，前后消费顺序严格一致。
+ */
 public enum ConsumeOrderlyStatus {
     /**
      * Success consumption

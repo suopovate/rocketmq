@@ -81,6 +81,9 @@ public class Broker2Client {
         return this.brokerController.getRemotingServer().invokeSync(channel, request, 10000);
     }
 
+    /**
+     * 通知客户端，本组消费者有变更，不考虑可用性，oneWay
+     */
     public void notifyConsumerIdsChanged(
         final Channel channel,
         final String consumerGroup) {

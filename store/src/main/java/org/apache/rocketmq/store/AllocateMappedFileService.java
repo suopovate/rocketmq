@@ -18,6 +18,7 @@ package org.apache.rocketmq.store;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.Iterator;
 import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -38,6 +39,10 @@ import org.apache.rocketmq.store.config.BrokerRole;
 public class AllocateMappedFileService extends ServiceThread {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private static int waitTimeOut = 1000 * 5;
+    /**
+     * 保存所有的请求了但是还没被拿去用的分配文件，在shutdown时，会删除这些文件，
+     * 主要是针对预分配的请求(一般申请分配时，都是同时请求两个，然后等待第一个处理完就返回)。
+     */
     private ConcurrentMap<String, AllocateRequest> requestTable =
             new ConcurrentHashMap<String, AllocateRequest>();
     private PriorityBlockingQueue<AllocateRequest> requestQueue =
@@ -49,6 +54,9 @@ public class AllocateMappedFileService extends ServiceThread {
         this.messageStore = messageStore;
     }
 
+    /**
+     * 如果是弃用了transientStorePool的，那本请求需要检查剩余的可用缓冲区数量，而且，没有做并发访问的处理，所以本方法应该是不支持并发访问的
+     */
     public MappedFile putRequestAndReturnMappedFile(String nextFilePath, String nextNextFilePath, int fileSize) {
         int canSubmitRequests = 2;
         if (this.messageStore.getMessageStoreConfig().isTransientStorePoolEnable()) {
@@ -57,44 +65,53 @@ public class AllocateMappedFileService extends ServiceThread {
                 canSubmitRequests = this.messageStore.getTransientStorePool().availableBufferNums() - this.requestQueue.size();
             }
         }
-
-        AllocateRequest nextReq = new AllocateRequest(nextFilePath, fileSize);
-        boolean nextPutOK = this.requestTable.putIfAbsent(nextFilePath, nextReq) == null;
-
-        if (nextPutOK) {
-            if (canSubmitRequests <= 0) {
-                log.warn("[NOTIFYME]TransientStorePool is not enough, so create mapped file error, " +
-                        "RequestQueueSize : {}, StorePoolSize: {}", this.requestQueue.size(), this.messageStore.getTransientStorePool().availableBufferNums());
-                this.requestTable.remove(nextFilePath);
-                return null;
-            }
-            boolean offerOK = this.requestQueue.offer(nextReq);
-            if (!offerOK) {
-                log.warn("never expected here, add a request to preallocate queue failed");
-            }
-            canSubmitRequests--;
-        }
-
-        AllocateRequest nextNextReq = new AllocateRequest(nextNextFilePath, fileSize);
-        boolean nextNextPutOK = this.requestTable.putIfAbsent(nextNextFilePath, nextNextReq) == null;
-        if (nextNextPutOK) {
-            if (canSubmitRequests <= 0) {
-                log.warn("[NOTIFYME]TransientStorePool is not enough, so skip preallocate mapped file, " +
-                        "RequestQueueSize : {}, StorePoolSize: {}", this.requestQueue.size(), this.messageStore.getTransientStorePool().availableBufferNums());
-                this.requestTable.remove(nextNextFilePath);
-            } else {
-                boolean offerOK = this.requestQueue.offer(nextNextReq);
+        // 一次分派两个mmap创建请求
+        {
+            AllocateRequest nextReq = new AllocateRequest(nextFilePath, fileSize);
+            boolean nextPutOK = this.requestTable.putIfAbsent(nextFilePath, nextReq) == null;
+            if (nextPutOK) {
+                if (canSubmitRequests <= 0) {
+                    log.warn(
+                        "[NOTIFYME]TransientStorePool is not enough, so create mapped file error, " +
+                            "RequestQueueSize : {}, StorePoolSize: {}",
+                        this.requestQueue.size(),
+                        this.messageStore.getTransientStorePool().availableBufferNums()
+                    );
+                    this.requestTable.remove(nextFilePath);
+                    return null;
+                }
+                boolean offerOK = this.requestQueue.offer(nextReq);
                 if (!offerOK) {
                     log.warn("never expected here, add a request to preallocate queue failed");
                 }
+                canSubmitRequests--;
+            }
+
+            AllocateRequest nextNextReq = new AllocateRequest(nextNextFilePath, fileSize);
+            boolean nextNextPutOK = this.requestTable.putIfAbsent(nextNextFilePath, nextNextReq) == null;
+            if (nextNextPutOK) {
+                if (canSubmitRequests <= 0) {
+                    log.warn(
+                        "[NOTIFYME]TransientStorePool is not enough, so skip preallocate mapped file, " +
+                            "RequestQueueSize : {}, StorePoolSize: {}",
+                        this.requestQueue.size(),
+                        this.messageStore.getTransientStorePool().availableBufferNums()
+                    );
+                    this.requestTable.remove(nextNextFilePath);
+                } else {
+                    boolean offerOK = this.requestQueue.offer(nextNextReq);
+                    if (!offerOK) {
+                        log.warn("never expected here, add a request to preallocate queue failed");
+                    }
+                }
             }
         }
-
         if (hasException) {
             log.warn(this.getServiceName() + " service has exception. so return null");
             return null;
         }
 
+        // 阻塞等待第一个文件分配成功
         AllocateRequest result = this.requestTable.get(nextFilePath);
         try {
             if (result != null) {
@@ -165,8 +182,10 @@ public class AllocateMappedFileService extends ServiceThread {
                 long beginTime = System.currentTimeMillis();
 
                 MappedFile mappedFile;
+                // 如果Bk是从节点，不支持使用缓存池
                 if (messageStore.getMessageStoreConfig().isTransientStorePoolEnable()) {
                     try {
+                        // 这是什么骚操作...而且每次都是取第一个，那就是支持提供一个对MappedFile的实例
                         mappedFile = ServiceLoader.load(MappedFile.class).iterator().next();
                         mappedFile.init(req.getFilePath(), req.getFileSize(), messageStore.getTransientStorePool());
                     } catch (RuntimeException e) {
@@ -318,4 +337,5 @@ public class AllocateMappedFileService extends ServiceThread {
             return true;
         }
     }
+
 }

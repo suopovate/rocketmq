@@ -41,11 +41,7 @@ import org.apache.rocketmq.client.ClientConfig;
 import org.apache.rocketmq.client.admin.MQAdminExtInner;
 import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
-import org.apache.rocketmq.client.impl.ClientRemotingProcessor;
-import org.apache.rocketmq.client.impl.FindBrokerResult;
-import org.apache.rocketmq.client.impl.MQAdminImpl;
-import org.apache.rocketmq.client.impl.MQClientAPIImpl;
-import org.apache.rocketmq.client.impl.MQClientManager;
+import org.apache.rocketmq.client.impl.*;
 import org.apache.rocketmq.client.impl.consumer.DefaultMQPullConsumerImpl;
 import org.apache.rocketmq.client.impl.consumer.DefaultMQPushConsumerImpl;
 import org.apache.rocketmq.client.impl.consumer.MQConsumerInner;
@@ -57,6 +53,7 @@ import org.apache.rocketmq.client.impl.producer.MQProducerInner;
 import org.apache.rocketmq.client.impl.producer.TopicPublishInfo;
 import org.apache.rocketmq.client.log.ClientLogger;
 import org.apache.rocketmq.client.producer.DefaultMQProducer;
+import org.apache.rocketmq.client.producer.SendCallback;
 import org.apache.rocketmq.client.stat.ConsumerStatsManager;
 import org.apache.rocketmq.common.MQVersion;
 import org.apache.rocketmq.common.MixAll;
@@ -64,6 +61,7 @@ import org.apache.rocketmq.common.ServiceState;
 import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.common.constant.PermName;
 import org.apache.rocketmq.common.filter.ExpressionType;
+import org.apache.rocketmq.common.message.Message;
 import org.apache.rocketmq.common.protocol.NamespaceUtil;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.common.message.MessageExt;
@@ -84,22 +82,59 @@ import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.apache.rocketmq.remoting.netty.NettyClientConfig;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 
+/**
+ * 消息消费者实例，通常情况下，一个应用程序，只需要启动一个实例就可以了，但是你如果想做高度定制，可以考虑创建多个实例。
+ *
+ * 通常我们控制台看到的，那些客户端就是这个实例，一个实例针对一个消费/生产组，只会存在一个消费/生产者。
+ *
+ * 整个消费实例的入口也在这里。
+ * 1. 负责定时重平衡各消费者的topic队列列表服务
+ * 2. 负责定时异步拉取消息服务(所有消费者共用一个pullService)
+ * 3. 负责远端服务的接口调用
+ * 4. 负责维护本消费实例的所有消费者组-消费者、所有生产者组-生产者
+ */
 public class MQClientInstance {
+
     private final static long LOCK_TIMEOUT_MILLIS = 3000;
     private final InternalLogger log = ClientLogger.getLog();
+    /**
+     * 各项客户端实例的配置
+     */
     private final ClientConfig clientConfig;
+    /**
+     * 这个实例在我们当前应用程序中，实例列表中的位置
+     */
     private final int instanceIndex;
+    /**
+     * 客户端的id 一般是 ip@instanceName 啥的
+     */
     private final String clientId;
     private final long bootTimestamp = System.currentTimeMillis();
+
+    // 实体关系
+    // 1 客户端实例 - n 消费者/生产者组 - 1 消费者/生产者
+
+    // 其实对于bk来说，他应该是这样的，他关注的是 客户端id + 消费者/生产者组 的维度，他不管你怎么组合，
+    // 反正最终 客户端id + 消费者组 就是一个最终的消费单元，他的管理也是基于这个单元的。
+    // 一个客户端实例-多个生产组 = 多个生产者
     private final ConcurrentMap<String/* group */, MQProducerInner> producerTable = new ConcurrentHashMap<String, MQProducerInner>();
+    // 一个客户端实例-多个消费组 = 多个消费者
     private final ConcurrentMap<String/* group */, MQConsumerInner> consumerTable = new ConcurrentHashMap<String, MQConsumerInner>();
     private final ConcurrentMap<String/* group */, MQAdminExtInner> adminExtTable = new ConcurrentHashMap<String, MQAdminExtInner>();
+
     private final NettyClientConfig nettyClientConfig;
     private final MQClientAPIImpl mQClientAPIImpl;
     private final MQAdminImpl mQAdminImpl;
+    // 这个是一个全局的元信息，它会收集当前这个消费客户端实例，所包含的所有消费者和生产者涉及的topic路由信息，统一存储在这里，主要是为了统一API调用层吧
     private final ConcurrentMap<String/* Topic */, TopicRouteData> topicRouteTable = new ConcurrentHashMap<String, TopicRouteData>();
+    // todo vate: 为什么要加锁呢？ 2023-02-15 10:57:34
     private final Lock lockNamesrv = new ReentrantLock();
     private final Lock lockHeartbeat = new ReentrantLock();
+
+    /**
+     * bk是可以做读写分离主动备份的，同一个bk名称，不同id，id为0就是master，其他都是slave
+     * 这些数据 应该是从 topicRouteInfo解析来的
+     */
     private final ConcurrentMap<String/* Broker Name */, HashMap<Long/* brokerId */, String/* address */>> brokerAddrTable =
         new ConcurrentHashMap<String, HashMap<Long, String>>();
     private final ConcurrentMap<String/* Broker Name */, HashMap<String/* address */, Integer>> brokerVersionTable =
@@ -110,11 +145,33 @@ public class MQClientInstance {
             return new Thread(r, "MQClientFactoryScheduledThread");
         }
     });
+    /**
+     * 用于处理服务端发给客户端的各项请求的处理实现
+     */
     private final ClientRemotingProcessor clientRemotingProcessor;
+
+    /**
+     * 消息异步拉取
+     */
     private final PullMessageService pullMessageService;
+    /**
+     * 重分配各个消费者对象订阅的topic下的mq列表的定时任务
+     */
     private final RebalanceService rebalanceService;
+
+    /**
+     * 这个，rmq客户端，自己用的一个生产者组，已知用途：
+     * 1. 如果消息消费异常，会利用该生产者对象将重试消息，投递回bk
+     */
     private final DefaultMQProducer defaultMQProducer;
+    /**
+     * 消费统计，忽略他
+     */
     private final ConsumerStatsManager consumerStatsManager;
+
+    /**
+     * 心跳次数统计
+     */
     private final AtomicLong sendHeartbeatTimesTotal = new AtomicLong(0);
     private ServiceState serviceState = ServiceState.CREATE_JUST;
     private Random random = new Random();
@@ -160,12 +217,16 @@ public class MQClientInstance {
     public static TopicPublishInfo topicRouteData2TopicPublishInfo(final String topic, final TopicRouteData route) {
         TopicPublishInfo info = new TopicPublishInfo();
         info.setTopicRouteData(route);
+        // bk0:xx;bk1:xx;bk2:xx
         if (route.getOrderTopicConf() != null && route.getOrderTopicConf().length() > 0) {
             String[] brokers = route.getOrderTopicConf().split(";");
             for (String broker : brokers) {
                 String[] item = broker.split(":");
+                // 队列数
                 int nums = Integer.parseInt(item[1]);
                 for (int i = 0; i < nums; i++) {
+                    // topic,bk名,队列id
+                    // todo vate: 同一个topic在不同bk，可能出现相同的mqId?需要看看topic在不同bk怎么做负载均衡的，感觉应该不是，可能只是客户端这么用 2023-02-15 15:13:46
                     MessageQueue mq = new MessageQueue(topic, item[0], i);
                     info.getMessageQueueList().add(mq);
                 }
@@ -206,7 +267,11 @@ public class MQClientInstance {
         return info;
     }
 
+    /**
+     * 从路由信息中收集收集这个topic下的所有队列并返回，这个不区分组
+     */
     public static Set<MessageQueue> topicRouteData2TopicSubscribeInfo(final String topic, final TopicRouteData route) {
+        // 收集这个topic下的所有队列，这个不区分组
         Set<MessageQueue> mqList = new HashSet<MessageQueue>();
         List<QueueData> qds = route.getQueueDatas();
         for (QueueData qd : qds) {
@@ -221,6 +286,9 @@ public class MQClientInstance {
         return mqList;
     }
 
+    /**
+     * 可以重复调用
+     */
     public void start() throws MQClientException {
 
         synchronized (this) {
@@ -232,14 +300,22 @@ public class MQClientInstance {
                         this.mQClientAPIImpl.fetchNameServerAddr();
                     }
                     // Start request-response channel
+                    // 启动netty服务，用于和服务端通信
                     this.mQClientAPIImpl.start();
                     // Start various schedule tasks
+                    // 1. 定时更新Ns地址
+                    // 2. 定时从ns服务更新topic路由信息,30s：topic - bk信息 - mq列表
+                    // 3. 定时同步消费实例心跳(状态信息)给所有订阅的bk（这里只会给当前订阅的发，会先清理一下下线的bk,30s
+                    // 4. 定时持久化所有的消费者位点,5s
+                    // 5. 定时调整消息消费服务的线程池大小（这个会影响用户消息处理逻辑的一个并发量）
                     this.startScheduledTask();
-                    // Start pull service
+                    // Start pull service 这个是拉消息服务
                     this.pullMessageService.start();
-                    // Start rebalance service
+                    // Start rebalance service，这里启动后，会阻塞20秒后才会执行第一次，执行的时候，就会重平衡消费者的订阅队列，然后触发所有消费者的消息订阅。
                     this.rebalanceService.start();
-                    // Start push service
+                    // Start push service 这个是推送服务 负责推消息到Bk的
+                    // 这里可以看到 他直接拿了 内部的impl对象启动，而不是直接启动装饰器，这应该是因为，内部的不需要跟踪消息，待研究
+                    // 这个是用来 消费的时候 有些消息消费异常,需要回推消息给Bk
                     this.defaultMQProducer.getDefaultMQProducerImpl().start(false);
                     log.info("the client factory [{}] start OK", this.clientId);
                     this.serviceState = ServiceState.RUNNING;
@@ -252,7 +328,15 @@ public class MQClientInstance {
         }
     }
 
+    /**
+     * 1. 定时更新Ns地址
+     * 2. 定时从ns服务更新topic路由信息
+     * 3. 定时同步消费实例心跳(状态信息)给所有订阅的bk（这里只会给当前订阅的发，会先清理一下下线的bk）
+     * 4. 定时持久化所有的消费者位点
+     * 5. 定时调整消息消费服务的线程池大小（这个会影响用户消息处理逻辑的一个并发量）
+     */
     private void startScheduledTask() {
+        // 如果未指定ns地址，在这里开启定时任务拉取，提供一个可以从某个专门的服务拉取ns的能力
         if (null == this.clientConfig.getNamesrvAddr()) {
             this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
@@ -266,7 +350,8 @@ public class MQClientInstance {
                 }
             }, 1000 * 10, 1000 * 60 * 2, TimeUnit.MILLISECONDS);
         }
-
+        // 定时更新topic路由信息,即 bk - topic - msgQueue 的映射信息
+        // 并且更新 本地消费者的 topic-可消费队列 表
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override
@@ -278,7 +363,7 @@ public class MQClientInstance {
                 }
             }
         }, 10, this.clientConfig.getPollNameServerInterval(), TimeUnit.MILLISECONDS);
-
+        // 定时发送心跳给所有bk，并且清理下线的bk
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override
@@ -292,6 +377,7 @@ public class MQClientInstance {
             }
         }, 1000, this.clientConfig.getHeartbeatBrokerInterval(), TimeUnit.MILLISECONDS);
 
+        // 定时持久化所有的消费者位点,5s
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override
@@ -304,6 +390,7 @@ public class MQClientInstance {
             }
         }, 1000 * 10, this.clientConfig.getPersistConsumerOffsetInterval(), TimeUnit.MILLISECONDS);
 
+        // 定时调整线程池大小？
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
 
             @Override
@@ -321,10 +408,16 @@ public class MQClientInstance {
         return clientId;
     }
 
+    /**
+     * 收集当前实例的所有 消费者和生产者的topic，存储到实例的 topic列表
+     *
+     * 然后从ns服务处拉取这些topic的路由信息，用来更新以下信息：
+     * 1.
+     */
     public void updateTopicRouteInfoFromNameServer() {
         Set<String> topicList = new HashSet<String>();
 
-        // Consumer
+        // 收集所有 Consumer 要用的topic
         {
             Iterator<Entry<String, MQConsumerInner>> it = this.consumerTable.entrySet().iterator();
             while (it.hasNext()) {
@@ -341,7 +434,7 @@ public class MQClientInstance {
             }
         }
 
-        // Producer
+        // 收集所有 Producer 要用的topic
         {
             Iterator<Entry<String, MQProducerInner>> it = this.producerTable.entrySet().iterator();
             while (it.hasNext()) {
@@ -354,6 +447,7 @@ public class MQClientInstance {
             }
         }
 
+        // 从远端服务处拉取topic路由信息
         for (String topic : topicList) {
             this.updateTopicRouteInfoFromNameServer(topic);
         }
@@ -381,6 +475,7 @@ public class MQClientInstance {
 
     /**
      * Remove offline broker
+     * 搞个新的表，不影响旧的，然后剔除掉所有不在topicRouteInfo中的bk
      */
     private void cleanOfflineBroker() {
         try {
@@ -426,6 +521,9 @@ public class MQClientInstance {
         }
     }
 
+    /**
+     * 检查用户的消息订阅配置是否合法，主要就是检查下如果非tag过滤，的情况下，过滤语法是否合法
+     */
     public void checkClientInBroker() throws MQClientException {
         Iterator<Entry<String, MQConsumerInner>> it = this.consumerTable.entrySet().iterator();
 
@@ -464,6 +562,14 @@ public class MQClientInstance {
         }
     }
 
+    /**
+     * 这个就是我们客户端与bk进行心跳同步的方法，会加锁,加的本地锁，防止本地多个线程同步调用
+     * 收集调用方：
+     * 1. 消息实例，定时会发送
+     * 2. 重平衡定时任务，如果订阅的队列有变更，也需要通过本方法通知bk
+     * 3. 生产者对象，启动的时候会调用一次本方法，一次
+     * 4. 消费者对象，启动的时候会调用一次本方法，一次
+     */
     public void sendHeartbeatToAllBrokerWithLock() {
         if (this.lockHeartbeat.tryLock()) {
             try {
@@ -505,6 +611,15 @@ public class MQClientInstance {
         }
     }
 
+    /**
+     * 比较重要的一个方法，更新topic路由信息的核心实现
+     *
+     * 逻辑：
+     * 从ns服务，捞出这个topic的路由信息，包括topic对应的bk列表，topic下的队列列表，然后利用这些信息
+     * 1. 更新全局的bk地址记录表
+     * 2. 更新本实例所有消费者-该topic的-可订阅队列列表
+     * 3. 更新本实例所有生产者-该topic的-可生产队列列表
+     */
     public boolean updateTopicRouteInfoFromNameServer(final String topic) {
         return updateTopicRouteInfoFromNameServer(topic, false, null);
     }
@@ -539,6 +654,7 @@ public class MQClientInstance {
         if (!this.brokerAddrTable.isEmpty()) {
             long times = this.sendHeartbeatTimesTotal.getAndIncrement();
             Iterator<Entry<String, HashMap<Long, String>>> it = this.brokerAddrTable.entrySet().iterator();
+            // 给所有bk发送心跳
             while (it.hasNext()) {
                 Entry<String, HashMap<Long, String>> entry = it.next();
                 String brokerName = entry.getKey();
@@ -548,12 +664,15 @@ public class MQClientInstance {
                         Long id = entry1.getKey();
                         String addr = entry1.getValue();
                         if (addr != null) {
+                            // 如果没有消费者，且不是主节点，就不发了？
+                            // 因为从节点不能写，所以没必要发的
                             if (consumerEmpty) {
                                 if (id != MixAll.MASTER_ID)
                                     continue;
                             }
 
                             try {
+                                // 返回的是 bk 的版本
                                 int version = this.mQClientAPIImpl.sendHearbeat(addr, heartbeatData, 3000);
                                 if (!this.brokerVersionTable.containsKey(brokerName)) {
                                     this.brokerVersionTable.put(brokerName, new HashMap<String, Integer>(4));
@@ -602,16 +721,42 @@ public class MQClientInstance {
         }
     }
 
+    /**
+     * 比较重要的一个方法，更新topic路由信息的核心实现
+     *
+     * 逻辑：
+     * 从ns服务，捞出这个topic的路由信息，包括topic对应的bk列表，topic下的队列列表，然后利用这些信息
+     * 1. 更新全局的bk地址记录表
+     * 2. 更新本实例所有消费者-该topic的-可订阅队列列表
+     * 3. 更新本实例所有生产者-该topic的-可生产队列列表
+     *
+     * isDefault参数的含义就是，使用defaultMQProducer提供的默认topic的路由信息，来填充 topic 参数的路由信息，然后保存到本地。
+     * 相当于：topic - 路由信息(使用的是defaultMQProducer默认topic的路由信息，而非自己的真实路由信息)
+     * 主要用于自动创建topic的场景
+     *
+     * 这里的 isDefault 和 defaultMQProducer 是用于干嘛的呢，主要是用于 topic不存在，但是可以自动创建的场景。
+     * 1. {@link DefaultMQProducerImpl#sendDefaultImpl} 发送消息，获取topic路由信息{@link DefaultMQProducerImpl#tryToFindTopicPublishInfo}
+     * 2. 然后会先尝试获取topic的真实路由信息
+     * 3. 发现topic不存在，则isDefault = true，尝试获取defaultTopic的路由信息，拿来填充 当前这个topic
+     * 4. 消息发送给 这个填充了 默认topic路由信息的 假topic
+     * 5. bk接收到该消息，发现topic不存在但是 自动创建配置开启，bk就会自动创建topic，并且同步给ns服务，over.
+     *
+     * 📢：为什么需要查默认topic的信息？主要是为了确认自动场景topic时，默认要提供哪些topic属性
+     */
     public boolean updateTopicRouteInfoFromNameServer(final String topic, boolean isDefault,
         DefaultMQProducer defaultMQProducer) {
         try {
             if (this.lockNamesrv.tryLock(LOCK_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
                 try {
                     TopicRouteData topicRouteData;
+                    // 假如topic未创建过，这里就会把 defaultMQProducer.createTopicKey 这个topic的队列 暂时给topic用
                     if (isDefault && defaultMQProducer != null) {
+                        // 注意，假如，我们有bk1、bk2，然后bk1和bk2设置了不同的 默认topic的配置(比如队列数为2，或者4)，
+                        // 那这里返回的topic路由信息 自然就会 包含有bk1和bk2的队列，最后就是6个队列
                         topicRouteData = this.mQClientAPIImpl.getDefaultTopicRouteInfoFromNameServer(defaultMQProducer.getCreateTopicKey(),
                             1000 * 3);
                         if (topicRouteData != null) {
+                            // 每个bk中的默认队列数
                             for (QueueData data : topicRouteData.getQueueDatas()) {
                                 int queueNums = Math.min(defaultMQProducer.getDefaultTopicQueueNums(), data.getReadQueueNums());
                                 data.setReadQueueNums(queueNums);
@@ -633,11 +778,12 @@ public class MQClientInstance {
                         if (changed) {
                             TopicRouteData cloneTopicRouteData = topicRouteData.cloneTopicRouteData();
 
+                            // 直接更新全局的bk地址记录表
                             for (BrokerData bd : topicRouteData.getBrokerDatas()) {
                                 this.brokerAddrTable.put(bd.getBrokerName(), bd.getBrokerAddrs());
                             }
 
-                            // Update Pub info
+                            // Update Pub info 更新每个生产者-该topic的可发布队列
                             {
                                 TopicPublishInfo publishInfo = topicRouteData2TopicPublishInfo(topic, topicRouteData);
                                 publishInfo.setHaveTopicRouterInfo(true);
@@ -651,7 +797,7 @@ public class MQClientInstance {
                                 }
                             }
 
-                            // Update sub info
+                            // Update sub info 更新消费者的可订阅队列
                             {
                                 Set<MessageQueue> subscribeInfo = topicRouteData2TopicSubscribeInfo(topic, topicRouteData);
                                 Iterator<Entry<String, MQConsumerInner>> it = this.consumerTable.entrySet().iterator();
@@ -705,6 +851,7 @@ public class MQClientInstance {
                 consumerData.setConsumeType(impl.consumeType());
                 consumerData.setMessageModel(impl.messageModel());
                 consumerData.setConsumeFromWhere(impl.consumeFromWhere());
+                // 这个消费者组订阅的topic信息
                 consumerData.getSubscriptionDataSet().addAll(impl.subscriptions());
                 consumerData.setUnitMode(impl.isUnitMode());
 
@@ -799,6 +946,9 @@ public class MQClientInstance {
 
     }
 
+    /**
+     * 如果本地订阅了，但是本地没有缓存这个topic的路由信息
+     */
     private boolean isNeedUpdateTopicRouteInfo(final String topic) {
         boolean result = false;
         {

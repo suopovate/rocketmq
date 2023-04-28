@@ -57,6 +57,9 @@ import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.apache.rocketmq.remoting.netty.ResponseFuture;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 
+/**
+ * 管理Api的调用实现类，底层还是依赖MQClientAPIImpl
+ */
 public class MQAdminImpl {
 
     private final InternalLogger log = ClientLogger.getLog();
@@ -161,6 +164,9 @@ public class MQAdminImpl {
         return resultQueues;
     }
 
+    /**
+     * 从Ns服务把这个topic所有可用的队列拉下来
+     */
     public Set<MessageQueue> fetchSubscribeMessageQueues(String topic) throws MQClientException {
         try {
             TopicRouteData topicRouteData = this.mQClientFactory.getMQClientAPIImpl().getTopicRouteInfoFromNameServer(topic, timeoutMillis);

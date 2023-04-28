@@ -20,9 +20,13 @@ import java.util.Properties;
 import org.apache.rocketmq.common.message.MessageType;
 import org.apache.rocketmq.store.stats.BrokerStatsManager;
 
+/**
+ * 消息发送请求处理时的上下文
+ */
 public class SendMessageContext {
     private String producerGroup;
     private String topic;
+    // todo vate: 两个消息id? 2023-01-05 14:43:28
     private String msgId;
     private String originMsgId;
     private Integer queueId;
@@ -30,11 +34,23 @@ public class SendMessageContext {
     private String brokerAddr;
     private String bornHost;
     private int bodyLength;
+    /**
+     * 处理结果？
+     */
     private int code;
     private String errorMsg;
+    /**
+     * 消息属性？
+     */
     private String msgProps;
     private Object mqTraceContext;
+    /**
+     * 扩展属性?
+     */
     private Properties extProps;
+    /**
+     * ?
+     */
     private String brokerRegionId;
     private String msgUniqueKey;
     private long bornTimeStamp;

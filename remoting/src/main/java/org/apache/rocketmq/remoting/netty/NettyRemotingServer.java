@@ -69,11 +69,20 @@ import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 public class NettyRemotingServer extends NettyRemotingAbstract implements RemotingServer {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(RemotingHelper.ROCKETMQ_REMOTING);
     private final ServerBootstrap serverBootstrap;
+    /**
+     * 处理netty socketChannel 读写事件的线程池，通道内字节的读取，和数据的写入，在这里做
+     */
     private final EventLoopGroup eventLoopGroupSelector;
+    /**
+     * 处理netty serverSocketChannel 连接的线程池
+     */
     private final EventLoopGroup eventLoopGroupBoss;
     private final NettyServerConfig nettyServerConfig;
 
     private final ExecutorService publicExecutor;
+    /**
+     * 自定义的一个通道事件监听器
+     */
     private final ChannelEventListener channelEventListener;
 
     private final Timer timer = new Timer("ServerHouseKeepingService", true);
@@ -185,7 +194,7 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
 
     @Override
     public void start() {
-        // 创建一个默认的事件轮询组
+        // 创建一个默认的事件轮询组，跟netty本身的连接处理、数据读写线程池隔离开，本线程来负责数据的编解码，业务处理
         this.defaultEventExecutorGroup = new DefaultEventExecutorGroup(
                 nettyServerConfig.getServerWorkerThreads(),
                 new ThreadFactory() {
@@ -246,7 +255,7 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
             this.nettyEventExecutor.start();
         }
 
-        // 定时任务，定时扫描需要响应的请求？
+        // 定时任务，定时扫描需要响应的请求表，如果发现某些请求超时了，就为其返回超时。
         this.timer.scheduleAtFixedRate(new TimerTask() {
 
             @Override
@@ -430,6 +439,9 @@ public class NettyRemotingServer extends NettyRemotingAbstract implements Remoti
         }
     }
 
+    /**
+     * 这个是什么，这个就是分派器啦，是将经过netty处理过的请求对象，分派给真正的业务代码的入口。
+     */
     @ChannelHandler.Sharable
     class NettyServerHandler extends SimpleChannelInboundHandler<RemotingCommand> {
 

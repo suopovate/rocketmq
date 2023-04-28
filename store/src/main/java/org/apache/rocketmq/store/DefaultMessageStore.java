@@ -65,6 +65,22 @@ import org.apache.rocketmq.store.stats.BrokerStatsManager;
 
 /**
  * 消息存储核心类
+ * 这里有个乌龙，就是这里的asyncPutMessage和putMessage的逻辑是一模一样的，
+ * 甚至都是特么同步的...只是返回的结果有无Completable包装的区别，就算是Completable包装的异步请求，也在进入到cml去写消息的时候是同步加锁写完，
+ * 然后用completable包装一下结果。
+ *
+ * 📢：对于Completable的一个用法做一下解释
+ * <pre>
+ *     Completable.ofComplete("1").applyAsync(()->xxx1,executor).accept(()->xxx2);
+ *     是这样的，第一个ofComplete创建了一个 状态为已完成的 completableStage，所以这时候你调用applyAsync这个方法，
+ *     是会立即执行里面的 ()->xxx1 逻辑的，但是由于我们这里是asyncAsync，所以就是会执行 executor.submit(()->xxx1);
+ *     (ps. 如果 我们第二个 不是 applyAsync() 是 apply()，那就相当于会立即执行 ()-> xxx1)
+ *     然后执行第三个accept(()->xxx)，这时候，假设 applyAsync submit的那个任务 ()->xxx1 比较久还没执行完，
+ *     那我们现在调用accept方法的时候，我们上一个阶段的状态就是未完成对吧？那就会把这个 ()->xxx2 作为回调，注册给 上一阶段，
+ *     等到上一阶段的 ()->xxx1 执行完以后，上一阶段就会在 ()->xxx1 执行的那个线程，执行我们的 ()->xxx2
+ *     📢：是在 上一阶段就会在 ()->xxx1 执行的那个线程 执行我们的 ()->xxx2
+ *     📢：假如 我们从 第一个 ofComplete 开始 直到最后的 accept，不管中间多少个步骤，我们都是 同步执行，那其实这整个链条...就跟我们正常的同步调用无异！
+ * </pre>
  */
 public class DefaultMessageStore implements MessageStore {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
@@ -83,24 +99,52 @@ public class DefaultMessageStore implements MessageStore {
 
     private final IndexService indexService;
 
+    /**
+     * 负责创建数据文件
+     */
     private final AllocateMappedFileService allocateMappedFileService;
 
+    /**
+     * 基于cml，异步构建消费队列
+     */
     private final ReputMessageService reputMessageService;
 
     private final HAService haService;
 
+    /**
+     * 消息延迟投递服务
+     */
     private final ScheduleMessageService scheduleMessageService;
 
+    /**
+     * 统计服务
+     */
     private final StoreStatsService storeStatsService;
 
+    /**
+     * 内存缓存池
+     */
     private final TransientStorePool transientStorePool;
 
+    /**
+     * 笼统的记录一下运行的状态
+     * 分了五个标志位
+     */
     private final RunningFlags runningFlags = new RunningFlags();
+    /**
+     * 系统时间工具类
+     */
     private final SystemClock systemClock = new SystemClock();
 
     private final ScheduledExecutorService scheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor(new ThreadFactoryImpl("StoreScheduledThread"));
+    /**
+     * 统计数据管理器，保存了各项统计数据
+     */
     private final BrokerStatsManager brokerStatsManager;
+    /**
+     * 监听器，当消息到达bk时触发。
+     */
     private final MessageArrivingListener messageArrivingListener;
     private final BrokerConfig brokerConfig;
 
@@ -185,25 +229,26 @@ public class DefaultMessageStore implements MessageStore {
         boolean result = true;
 
         try {
+            // 检查上次退出后，存储目录下，abort文件是否存在，存在就说明上次是意外退出
             boolean lastExitOK = !this.isTempFileExist();
             log.info("last shutdown {}", lastExitOK ? "normally" : "abnormally");
 
+            // 定时消息投递服务，实现定时发送消息用的
             if (null != scheduleMessageService) {
                 result = result && this.scheduleMessageService.load();
             }
 
-            // load Commit Log
+            // 加载commitLog和consumeQueue，都是把mf文件加载到mfq里边，有一个点，这时候是不可写的，因为mf和mfq的offset还没处理
             result = result && this.commitLog.load();
-
-            // load Consume Queue
             result = result && this.loadConsumeQueue();
 
             if (result) {
+                // 存储检查点的文件加载
                 this.storeCheckpoint =
                     new StoreCheckpoint(StorePathConfigHelper.getStoreCheckpoint(this.messageStoreConfig.getStorePathRootDir()));
-
+                // 索引文件加载
                 this.indexService.load(lastExitOK);
-
+                // 恢复啥呢？主要恢复commitLog和consumerQueue对象的一些offset值，在这里会对mf的writePosition进行恢复，这样后面才可正常进行数据的写入和读取
                 this.recover(lastExitOK);
 
                 log.info("load over, and the max phy offset = {}", this.getMaxPhyOffset());
@@ -221,6 +266,16 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     /**
+     * 1. 加锁，防止同一个数据目录启动多个进程
+     * 2. 检查各个队列的消息位点，并找出这些队列的消息中，最大的物理日志位点(maxPhysicalPosInLogicQueue)，如果maxPhysicalPosInLogicQueue小于已提交日志的最大位点
+     *    则恢复，maxPhysicalPosInLogicQueue - 提交日志最大位点，这部分的消息到逻辑队列中。
+     * 3. 等待2恢复完成
+     * 4. 启用ha服务、启动定时消息投递服务
+     * 5. 启动消息队列刷新服务
+     * 6. 启动commitLog
+     * 7. 启动存储统计服务
+     * 8. 创建存储目录？？？这里我不理解，在load的时候不就干过了？
+     * 9.
      * @throws Exception
      */
     public void start() throws Exception {
@@ -242,14 +297,15 @@ public class DefaultMessageStore implements MessageStore {
             long maxPhysicalPosInLogicQueue = commitLog.getMinOffset();
             for (ConcurrentMap<Integer, ConsumeQueue> maps : this.consumeQueueTable.values()) {
                 for (ConsumeQueue logic : maps.values()) {
-                    if (logic.getMaxPhysicOffset() > maxPhysicalPosInLogicQueue) {
-                        maxPhysicalPosInLogicQueue = logic.getMaxPhysicOffset();
+                    if (logic.getMaxCommitLogOffset() > maxPhysicalPosInLogicQueue) {
+                        maxPhysicalPosInLogicQueue = logic.getMaxCommitLogOffset();
                     }
                 }
             }
             if (maxPhysicalPosInLogicQueue < 0) {
                 maxPhysicalPosInLogicQueue = 0;
             }
+            // 所有消息逻辑队列的最大日志物理位点都小于当前已有的最小物理位点，不是正常情况
             if (maxPhysicalPosInLogicQueue < this.commitLog.getMinOffset()) {
                 maxPhysicalPosInLogicQueue = this.commitLog.getMinOffset();
                 /**
@@ -264,10 +320,12 @@ public class DefaultMessageStore implements MessageStore {
             }
             log.info("[SetReputOffset] maxPhysicalPosInLogicQueue={} clMinOffset={} clMaxOffset={} clConfirmedOffset={}",
                 maxPhysicalPosInLogicQueue, this.commitLog.getMinOffset(), this.commitLog.getMaxOffset(), this.commitLog.getConfirmOffset());
+            // 设置一下逻辑队列构建服务的起始位点，即，当前所有的逻辑队列中，最末尾的消息的物理位置中，最大的那个物理位置，从这里开始，剩下的日志，就是待构建逻辑队列的日志
             this.reputMessageService.setReputFromOffset(maxPhysicalPosInLogicQueue);
             this.reputMessageService.start();
 
             /**
+             *  处理完那些待构建的逻辑队列的日志,再启动其他服务
              *  1. Finish dispatching the messages fall behind, then to start other services.
              *  2. DLedger committedPos may be missing, so here just require dispatchBehindBytes <= 0
              */
@@ -278,6 +336,7 @@ public class DefaultMessageStore implements MessageStore {
                 Thread.sleep(1000);
                 log.info("Try to finish doing reput the messages fall behind during the starting, reputOffset={} maxOffset={} behind={}", this.reputMessageService.getReputFromOffset(), this.getMaxPhyOffset(), this.dispatchBehindBytes());
             }
+            // 恢复commitLog对象中的队列offset表
             this.recoverTopicQueueTable();
         }
 
@@ -286,11 +345,15 @@ public class DefaultMessageStore implements MessageStore {
             this.handleScheduleMessageService(messageStoreConfig.getBrokerRole());
         }
 
+        // 启动逻辑队列刷新服务
         this.flushConsumeQueueService.start();
+        // 启动提交日志刷新服务
         this.commitLog.start();
+        // 启动统计服务
         this.storeStatsService.start();
 
         this.createTempFile();
+        // 加上一系列的磁盘空间检查、cml日志文件删除等任务
         this.addScheduleTask();
         this.shutdown = false;
     }
@@ -318,16 +381,21 @@ public class DefaultMessageStore implements MessageStore {
             this.storeStatsService.shutdown();
             this.indexService.shutdown();
             this.commitLog.shutdown();
+            // 关闭cmq、index构建服务
             this.reputMessageService.shutdown();
             this.flushConsumeQueueService.shutdown();
             this.allocateMappedFileService.shutdown();
             this.storeCheckpoint.flush();
             this.storeCheckpoint.shutdown();
 
+
+            // 如果状态是可写，且cmq、index的构建已经跟上了cml的，那就是正常退出，跟不上就是不正常退出
+            // todo vate: 为什么要判断可写呢？不加这个行不行？ 2023-04-28 11:54:12
             if (this.runningFlags.isWriteable() && dispatchBehindBytes() == 0) {
                 this.deleteFile(StorePathConfigHelper.getAbortFile(this.messageStoreConfig.getStorePathRootDir()));
                 shutDownNormal = true;
             } else {
+                // 如果是不可写状态 或者 还有一部分cml数据没有构建 index 和 cmq
                 log.warn("the store may be wrong, so shutdown abnormally, and keep abort file.");
             }
         }
@@ -432,6 +500,7 @@ public class DefaultMessageStore implements MessageStore {
         long beginTime = this.getSystemClock().now();
         CompletableFuture<PutMessageResult> putResultFuture = this.commitLog.asyncPutMessage(msg);
 
+        // 在执行完消息插入后，记录一些统计信息
         putResultFuture.thenAccept((result) -> {
             long elapsedTime = this.getSystemClock().now() - beginTime;
             if (elapsedTime > 500) {
@@ -459,8 +528,10 @@ public class DefaultMessageStore implements MessageStore {
         }
 
         long beginTime = this.getSystemClock().now();
+        // 消息存储的主要实现逻辑在这
         CompletableFuture<PutMessageResult> resultFuture = this.commitLog.asyncPutMessages(messageExtBatch);
 
+        // 这里只是做个统计
         resultFuture.thenAccept((result) -> {
             long elapsedTime = this.getSystemClock().now() - beginTime;
             if (elapsedTime > 500) {
@@ -1076,7 +1147,7 @@ public class DefaultMessageStore implements MessageStore {
                         log.warn("maybe ConsumeQueue was created just now. topic={} queueId={} maxPhysicOffset={} minLogicOffset={}.",
                             nextQT.getValue().getTopic(),
                             nextQT.getValue().getQueueId(),
-                            nextQT.getValue().getMaxPhysicOffset(),
+                            nextQT.getValue().getMaxCommitLogOffset(),
                             nextQT.getValue().getMinLogicOffset());
                     } else if (maxCLOffsetInConsumeQueue < minCommitLogOffset) {
                         log.info(
@@ -1212,11 +1283,25 @@ public class DefaultMessageStore implements MessageStore {
         return null;
     }
 
+    /**
+     * 这个方法，是会有很多线程并发调用的，包括消息的查询，和我们写新消息到cmq的时候
+     *
+     * 不过，
+     * 1. 写消息的线程只有一个
+     * 2. 对于已存在的cmq，在加载的时候，肯定就会创建好 cmq 实例，这里不存在新建的问题
+     * 3. 对于不存在的cmq，那么在消息写入，或者出现未写入过的cml的Offset的查询时，可能就会走到这里？但是我估计也不可能，因为topic，queueId
+     * 肯定前提是知道了cml的位点才行，所以，这里的创建cmq的情况，应该是没有并发，猜测。
+     *
+     */
     public ConsumeQueue findConsumeQueue(String topic, int queueId) {
+        // todo vate: topic自动新建是在哪里触发的？ 2023-01-15 01:07:11
+        // 这里是不是有个问题，就是如果这个topic我们没有创建过，这里就可能拿不到，所以这里会自动新建?
         ConcurrentMap<Integer, ConsumeQueue> map = consumeQueueTable.get(topic);
         if (null == map) {
             ConcurrentMap<Integer, ConsumeQueue> newMap = new ConcurrentHashMap<Integer, ConsumeQueue>(128);
             ConcurrentMap<Integer, ConsumeQueue> oldMap = consumeQueueTable.putIfAbsent(topic, newMap);
+            // 这里应该是考虑到并发的情况，假如两个线程同时进来这里，那这个oldMap可能就是别的线程put的
+            // todo vate: 这个地方对ConcurrentMap的使用值得学习 2023-01-15 01:04:26
             if (oldMap != null) {
                 map = oldMap;
             } else {
@@ -1226,6 +1311,9 @@ public class DefaultMessageStore implements MessageStore {
 
         ConsumeQueue logic = map.get(queueId);
         if (null == logic) {
+            // 新建消息队列，这个地方应该就是会创建新的cmq文件的地方了，另外一个地方是启动的时候加载，那个不会创建的
+            // 这里的话，如果并发到这里，几个线程都创建了一个新的 cmq，好像问题也不大，因为开销不大，也没有在这里加载文件啥的
+            // 毕竟cmq本身是一个目录来的，他还不是一个具体文件
             ConsumeQueue newLogic = new ConsumeQueue(
                 topic,
                 queueId,
@@ -1306,6 +1394,7 @@ public class DefaultMessageStore implements MessageStore {
 
     private void addScheduleTask() {
 
+        // 定时清理cml cmq 过期数据文件
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
@@ -1313,6 +1402,7 @@ public class DefaultMessageStore implements MessageStore {
             }
         }, 1000 * 60, this.messageStoreConfig.getCleanResourceInterval(), TimeUnit.MILLISECONDS);
 
+        // 定期检查cml cmq的数据文件，是否正常，不正常就打印error
         this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
@@ -1347,6 +1437,8 @@ public class DefaultMessageStore implements MessageStore {
         // DefaultMessageStore.this.cleanExpiredConsumerQueue();
         // }
         // }, 1, 1, TimeUnit.HOURS);
+        // 定时检测磁盘空间，但是不会做删除操作，会打印日志并且设置RunningFlags状态，如果状态为diskFull，会导致消息写入失败，调用方可以监控日志做告警
+        // 假如磁盘不够用了，通过磁盘扩容，下一次这里就会发现有可用空间，又会设置diskFull为false了
         this.diskCheckScheduledExecutorService.scheduleAtFixedRate(new Runnable() {
             public void run() {
                 DefaultMessageStore.this.cleanCommitLogService.isSpaceFull();
@@ -1374,19 +1466,23 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     private boolean isTempFileExist() {
+        // abort文件
         String fileName = StorePathConfigHelper.getAbortFile(this.messageStoreConfig.getStorePathRootDir());
         File file = new File(fileName);
         return file.exists();
     }
 
     private boolean loadConsumeQueue() {
+        // 存储目录
         File dirLogic = new File(StorePathConfigHelper.getStorePathConsumeQueue(this.messageStoreConfig.getStorePathRootDir()));
+        // 每个topic一个目录
         File[] fileTopicList = dirLogic.listFiles();
         if (fileTopicList != null) {
 
             for (File fileTopic : fileTopicList) {
                 String topic = fileTopic.getName();
 
+                // 每个队列一个目录
                 File[] fileQueueIdList = fileTopic.listFiles();
                 if (fileQueueIdList != null) {
                     for (File fileQueueId : fileQueueIdList) {
@@ -1396,6 +1492,7 @@ public class DefaultMessageStore implements MessageStore {
                         } catch (NumberFormatException e) {
                             continue;
                         }
+                        // 队列Id作为队列数据的目录id
                         ConsumeQueue logic = new ConsumeQueue(
                             topic,
                             queueId,
@@ -1416,12 +1513,20 @@ public class DefaultMessageStore implements MessageStore {
         return true;
     }
 
+    /**
+     * 1. 恢复cmq，找到所有cmq中最末尾的cml位置，且只考虑了，cmq落后于cml的情况，假如cmq的位点大于cml的情况，没有考虑
+     * 2. 恢复cml，主要是根据maxPhyOffsetOfConsumeQueue来做一个
+     */
     private void recover(final boolean lastExitOK) {
+        // 计算逻辑消息队列相关元信息，并返回当前所有消息队列写到的最大的位置
+        // 我估计 如果这个值 小于现在 提交日志的最大值 应该意味着数据有缺失，应该是利用commitLog去恢复
         long maxPhyOffsetOfConsumeQueue = this.recoverConsumeQueue();
 
         if (lastExitOK) {
+            // 检查cml中消息内容的完整性，加设置clog的mf的写位点
             this.commitLog.recoverNormally(maxPhyOffsetOfConsumeQueue);
         } else {
+            // todo vate: 非正常关闭的恢复逻辑 2023-01-13 17:35:39
             this.commitLog.recoverAbnormally(maxPhyOffsetOfConsumeQueue);
         }
 
@@ -1448,26 +1553,36 @@ public class DefaultMessageStore implements MessageStore {
     }
 
     private long recoverConsumeQueue() {
-        long maxPhysicOffset = -1;
+        // 所有队列的 "最尾消息提交位点值" ，取位点最大的那个 返回
+        long latestMsgCommitLogOffset = -1;
         for (ConcurrentMap<Integer, ConsumeQueue> maps : this.consumeQueueTable.values()) {
-            for (ConsumeQueue logic : maps.values()) {
-                logic.recover();
-                if (logic.getMaxPhysicOffset() > maxPhysicOffset) {
-                    maxPhysicOffset = logic.getMaxPhysicOffset();
+            for (ConsumeQueue queue : maps.values()) {
+                // 单个队列的恢复，处理完，这个队列就可以写数据了，mf的位点被设置好了，这也是他的主要作用
+                // 1. 删除脏数据
+                // 2. 找到那个最后可写的位点
+                queue.recover();
+                if (queue.getMaxCommitLogOffset() > latestMsgCommitLogOffset) {
+                    latestMsgCommitLogOffset = queue.getMaxCommitLogOffset();
                 }
             }
         }
 
-        return maxPhysicOffset;
+        return latestMsgCommitLogOffset;
     }
 
+    /**
+     * 在cml中存储了当前bk上所有的topic-队列 的 下一个可写位置，在这里利用 consumeQueueTable(在恢复consumer队列的时候已经处理完) 的数据来恢复
+     */
     public void recoverTopicQueueTable() {
         HashMap<String/* topic-queueid */, Long/* offset */> table = new HashMap<String, Long>(1024);
+        // cml的最小位点
         long minPhyOffset = this.commitLog.getMinOffset();
         for (ConcurrentMap<Integer, ConsumeQueue> maps : this.consumeQueueTable.values()) {
             for (ConsumeQueue logic : maps.values()) {
                 String key = logic.getTopic() + "-" + logic.getQueueId();
+                // 记录 队列当前写入的最新条目位点
                 table.put(key, logic.getMaxOffsetInQueue());
+                // 为啥在这更新...
                 logic.correctMinOffset(minPhyOffset);
             }
         }
@@ -1567,16 +1682,22 @@ public class DefaultMessageStore implements MessageStore {
         }, 6, TimeUnit.SECONDS);
     }
 
+    /**
+     * 搞了个队列来处理所有的consumeQueue的写入
+     * 跟我昨天洗澡时设想的思路是一样的
+     */
     class CommitLogDispatcherBuildConsumeQueue implements CommitLogDispatcher {
 
         @Override
         public void dispatch(DispatchRequest request) {
             final int tranType = MessageSysFlag.getTransactionValue(request.getSysFlag());
             switch (tranType) {
+                // 非事务消息，或者消息类型为事务已提交
                 case MessageSysFlag.TRANSACTION_NOT_TYPE:
                 case MessageSysFlag.TRANSACTION_COMMIT_TYPE:
                     DefaultMessageStore.this.putMessagePositionInfo(request);
                     break;
+                // 如果事务未提交，或者事务回滚，那就不处理
                 case MessageSysFlag.TRANSACTION_PREPARED_TYPE:
                 case MessageSysFlag.TRANSACTION_ROLLBACK_TYPE:
                     break;
@@ -1749,6 +1870,10 @@ public class DefaultMessageStore implements MessageStore {
         public void setManualDeleteFileSeveralTimes(int manualDeleteFileSeveralTimes) {
             this.manualDeleteFileSeveralTimes = manualDeleteFileSeveralTimes;
         }
+
+        /**
+         * 检测磁盘的状态，并设置RunningFlags中diskFull的状态。
+         */
         public boolean isSpaceFull() {
             double physicRatio = UtilAll.getDiskPartitionSpaceUsedPercent(getStorePathPhysic());
             double ratio = DefaultMessageStore.this.getMessageStoreConfig().getDiskMaxUsedSpaceRatio() / 100.0;
@@ -1756,16 +1881,16 @@ public class DefaultMessageStore implements MessageStore {
                 DefaultMessageStore.log.info("physic disk of commitLog used: " + physicRatio);
             }
             if (physicRatio > this.diskSpaceWarningLevelRatio) {
-                boolean diskok = DefaultMessageStore.this.runningFlags.getAndMakeDiskFull();
-                if (diskok) {
+                boolean flagUpdateOk = DefaultMessageStore.this.runningFlags.getAndMakeDiskFull();
+                if (flagUpdateOk) {
                     DefaultMessageStore.log.error("physic disk of commitLog maybe full soon, used " + physicRatio + ", so mark disk full");
                 }
 
                 return true;
             } else {
-                boolean diskok = DefaultMessageStore.this.runningFlags.getAndMakeDiskOK();
-
-                if (!diskok) {
+                boolean flagUpdateOk = DefaultMessageStore.this.runningFlags.getAndMakeDiskOK();
+                // 他原先这里是 !diskOk，应该是写错了
+                if (flagUpdateOk) {
                     DefaultMessageStore.log.info("physic disk space of commitLog OK " + physicRatio + ", so mark disk ok");
                 }
 
@@ -1885,6 +2010,9 @@ public class DefaultMessageStore implements MessageStore {
         }
     }
 
+    /**
+     * 这个服务，就是基于cml的情况，异步的构建comsumerQueue和index数据
+     */
     class ReputMessageService extends ServiceThread {
 
         private volatile long reputFromOffset = 0;
@@ -1899,13 +2027,14 @@ public class DefaultMessageStore implements MessageStore {
 
         @Override
         public void shutdown() {
+            // 关闭时，给一个机会追上提交日志
             for (int i = 0; i < 50 && this.isCommitLogAvailable(); i++) {
                 try {
                     Thread.sleep(100);
                 } catch (InterruptedException ignored) {
                 }
             }
-
+            // 还是没追上，打个日志吧
             if (this.isCommitLogAvailable()) {
                 log.warn("shutdown ReputMessageService, but commitlog have not finish to be dispatched, CL: {} reputFromOffset: {}",
                     DefaultMessageStore.this.commitLog.getMaxOffset(), this.reputFromOffset);
@@ -1922,6 +2051,15 @@ public class DefaultMessageStore implements MessageStore {
             return this.reputFromOffset < DefaultMessageStore.this.commitLog.getMaxOffset();
         }
 
+        /**
+         * 这里有一个问题，cml有异步刷盘机制，然后cml的话，对外的可读数据是wrotePosition，而不是flushedPosition，
+         * wrotePosition 意味着数据已经写到了 内核的pageCache，但是不一定落盘。
+         * 所以可能出现：
+         * 1. 这里已经将未落盘的cml写到了cmq、index，然后将cmq、index落盘了(理论上有可能哈，无法控制的)
+         * 2. 然后断电，cml未落盘部分数据丢失，这时候cmq、index多了几条无效的cml消息索引，怎么办？
+         * 3. 首先断电的情况或者，其他非断电但是不正常的关闭情况({@link DefaultMessageStore#shutdown()}里会判断如果cmq、index未跟上cml是不正常)，会标记abort
+         * 4. 这时候启动的时候 就会走cml的 abnormalRecover，剩下的就看里面咋处理了
+         */
         private void doReput() {
             if (this.reputFromOffset < DefaultMessageStore.this.commitLog.getMinOffset()) {
                 log.warn("The reputFromOffset={} is smaller than minPyOffset={}, this usually indicate that the dispatch behind too much and the commitlog has expired.",
@@ -1935,20 +2073,25 @@ public class DefaultMessageStore implements MessageStore {
                     break;
                 }
 
+                // 从cml中找出当前待处理的cml数据范围
                 SelectMappedBufferResult result = DefaultMessageStore.this.commitLog.getData(reputFromOffset);
                 if (result != null) {
                     try {
                         this.reputFromOffset = result.getStartOffset();
 
                         for (int readSize = 0; readSize < result.getSize() && doNext; ) {
+                            // 检查消息，并且返回检查结果，和消息的内容
                             DispatchRequest dispatchRequest =
                                 DefaultMessageStore.this.commitLog.checkMessageAndReturnSize(result.getByteBuffer(), false, false);
                             int size = dispatchRequest.getBufferSize() == -1 ? dispatchRequest.getMsgSize() : dispatchRequest.getBufferSize();
 
                             if (dispatchRequest.isSuccess()) {
                                 if (size > 0) {
+                                    // 把消息委派给各个分派服务去处理：consumeQueue增加消息、Index构建等，这里是同步等待的
                                     DefaultMessageStore.this.doDispatch(dispatchRequest);
 
+                                    // 走到这里，意味着cmq和Index都构建好了，不过仍然不保证落盘，因为这两个刷盘是专门的线程干的
+                                    // 消息构建成功，可以消费了。
                                     if (BrokerRole.SLAVE != DefaultMessageStore.this.getMessageStoreConfig().getBrokerRole()
                                             && DefaultMessageStore.this.brokerConfig.isLongPollingEnable()
                                             && DefaultMessageStore.this.messageArrivingListener != null) {
@@ -1961,6 +2104,7 @@ public class DefaultMessageStore implements MessageStore {
                                     this.reputFromOffset += size;
                                     readSize += size;
                                     if (DefaultMessageStore.this.getMessageStoreConfig().getBrokerRole() == BrokerRole.SLAVE) {
+                                        // 对于从节点，统计一下topic的消息存储次数、消息存储size
                                         DefaultMessageStore.this.storeStatsService
                                             .getSinglePutMessageTopicTimesTotal(dispatchRequest.getTopic()).incrementAndGet();
                                         DefaultMessageStore.this.storeStatsService
@@ -1971,7 +2115,7 @@ public class DefaultMessageStore implements MessageStore {
                                     this.reputFromOffset = DefaultMessageStore.this.commitLog.rollNextFile(this.reputFromOffset);
                                     readSize = result.getSize();
                                 }
-                            } else if (!dispatchRequest.isSuccess()) {
+                            } else {
 
                                 if (size > 0) {
                                     log.error("[BUG]read total count not equals msg total size. reputFromOffset={}", reputFromOffset);
@@ -2004,6 +2148,7 @@ public class DefaultMessageStore implements MessageStore {
 
             while (!this.isStopped()) {
                 try {
+                    // 每隔一毫秒运行一次，异步把cml中的消息，写入到csq
                     Thread.sleep(1);
                     this.doReput();
                 } catch (Exception e) {

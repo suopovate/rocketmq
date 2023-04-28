@@ -30,12 +30,21 @@ import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.remoting.common.RemotingHelper;
 import org.apache.rocketmq.remoting.common.RemotingUtil;
 
+/**
+ * 生产者管理
+ */
 public class ProducerManager {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.BROKER_LOGGER_NAME);
     private static final long CHANNEL_EXPIRED_TIMEOUT = 1000 * 120;
     private static final int GET_AVAILABLE_CHANNEL_RETRY_COUNT = 3;
+    /**
+     * 生产者组-客户端连接信息
+     */
     private final ConcurrentHashMap<String /* group name */, ConcurrentHashMap<Channel, ClientChannelInfo>> groupChannelTable =
         new ConcurrentHashMap<>();
+    /**
+     * 消费者id-客户端连接
+     */
     private final ConcurrentHashMap<String, Channel> clientChannelTable = new ConcurrentHashMap<>();
     private PositiveAtomicCounter positiveAtomicCounter = new PositiveAtomicCounter();
 
@@ -71,11 +80,16 @@ public class ProducerManager {
         }
     }
 
+    /**
+     * 处理客户端连接关闭的事件
+     */
     public synchronized void doChannelCloseEvent(final String remoteAddr, final Channel channel) {
         if (channel != null) {
+            // 遍历所有的消费者组
             for (final Map.Entry<String, ConcurrentHashMap<Channel, ClientChannelInfo>> entry : this.groupChannelTable
                     .entrySet()) {
                 final String group = entry.getKey();
+                // 当前消费者组中包含的客户端连接
                 final ConcurrentHashMap<Channel, ClientChannelInfo> clientChannelInfoTable =
                         entry.getValue();
                 final ClientChannelInfo clientChannelInfo =

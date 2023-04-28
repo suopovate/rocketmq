@@ -46,6 +46,10 @@ import org.apache.rocketmq.remoting.RPCHook;
 import org.apache.rocketmq.remoting.exception.RemotingException;
 
 /**
+ * 装饰类，对外是这个，内部实现是 {@link DefaultMQPushConsumerImpl}
+ *
+ * This class is a config container to keep all config item of PushConsumer.
+ *
  * In most scenarios, this is the mostly recommended class to consume messages.
  * </p>
  *
@@ -169,6 +173,7 @@ public class DefaultMQPushConsumer extends ClientConfig implements MQPushConsume
     private long adjustThreadPoolNumsThreshold = 100000;
 
     /**
+     * 并发最大跨度偏移。
      * Concurrently max span offset.it has no effect on sequential consumption
      */
     private int consumeConcurrentlyMaxSpan = 2000;

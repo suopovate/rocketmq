@@ -42,20 +42,31 @@ import org.slf4j.LoggerFactory;
 
 import java.io.BufferedInputStream;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.rocketmq.remoting.netty.TlsSystemConfig.TLS_ENABLE;
 
+/**
+ * BK启动器
+ */
 public class BrokerStartup {
+
+    /**
+     * 保存从配置文件configFile中加载的所有配置
+     */
     public static Properties properties = null;
     public static CommandLine commandLine = null;
     public static String configFile = null;
     public static InternalLogger log;
 
     public static void main(String[] args) {
-        start(createBrokerController(args));
+        // 初始化bk
+        BrokerController brokerController = createBrokerController(args);
+        // 启动bk
+        start(brokerController);
     }
 
     public static BrokerController start(BrokerController controller) {
@@ -88,6 +99,7 @@ public class BrokerStartup {
     }
 
     public static BrokerController createBrokerController(String[] args) {
+        // 1. 初始化BK实例元信息
         System.setProperty(RemotingCommand.REMOTING_VERSION_KEY, Integer.toString(MQVersion.CURRENT_VERSION));
 
         if (null == System.getProperty(NettySystemConfig.COM_ROCKETMQ_REMOTING_SOCKET_SNDBUF_SIZE)) {
@@ -99,7 +111,7 @@ public class BrokerStartup {
         }
 
         try {
-            //PackageConflictDetect.detectFastjson();
+            // 2. 解析命令行参数
             Options options = ServerUtil.buildCommandlineOptions(new Options());
             commandLine = ServerUtil.parseCmdLine("mqbroker", args, buildCommandlineOptions(options),
                 new PosixParser());
@@ -107,6 +119,7 @@ public class BrokerStartup {
                 System.exit(-1);
             }
 
+            // 3. 配置初始化
             final BrokerConfig brokerConfig = new BrokerConfig();
             final NettyServerConfig nettyServerConfig = new NettyServerConfig();
             final NettyClientConfig nettyClientConfig = new NettyClientConfig();
@@ -116,52 +129,30 @@ public class BrokerStartup {
             nettyServerConfig.setListenPort(10911);
             final MessageStoreConfig messageStoreConfig = new MessageStoreConfig();
 
+            // todo vate: 为什么从节点这里要预留一部分内存出来？ 2023-04-07 00:12:26
             if (BrokerRole.SLAVE == messageStoreConfig.getBrokerRole()) {
                 int ratio = messageStoreConfig.getAccessMessageInMemoryMaxRatio() - 10;
                 messageStoreConfig.setAccessMessageInMemoryMaxRatio(ratio);
             }
+            // 3.1 用户指定配置文件初始化
+            initCustomConfig(brokerConfig, nettyServerConfig, nettyClientConfig, messageStoreConfig);
 
-            if (commandLine.hasOption('c')) {
-                String file = commandLine.getOptionValue('c');
-                if (file != null) {
-                    configFile = file;
-                    InputStream in = new BufferedInputStream(new FileInputStream(file));
-                    properties = new Properties();
-                    properties.load(in);
-
-                    properties2SystemEnv(properties);
-                    MixAll.properties2Object(properties, brokerConfig);
-                    MixAll.properties2Object(properties, nettyServerConfig);
-                    MixAll.properties2Object(properties, nettyClientConfig);
-                    MixAll.properties2Object(properties, messageStoreConfig);
-
-                    BrokerPathConfigHelper.setBrokerConfigPath(file);
-                    in.close();
-                }
-            }
-
+            // 3.2 命令行传递配置初始化
+            // 配置优先级：命令行 > 自定义配置文件 > 默认
             MixAll.properties2Object(ServerUtil.commandLine2Properties(commandLine), brokerConfig);
 
+            // 3.3 必须提供 rocketmq 主目录
             if (null == brokerConfig.getRocketmqHome()) {
                 System.out.printf("Please set the %s variable in your environment to match the location of the RocketMQ installation", MixAll.ROCKETMQ_HOME_ENV);
                 System.exit(-2);
             }
-
+            // 3.4 NS地址合法性检查
             String namesrvAddr = brokerConfig.getNamesrvAddr();
             if (null != namesrvAddr) {
-                try {
-                    String[] addrArray = namesrvAddr.split(";");
-                    for (String addr : addrArray) {
-                        RemotingUtil.string2SocketAddress(addr);
-                    }
-                } catch (Exception e) {
-                    System.out.printf(
-                        "The Name Server Address[%s] illegal, please set it as follows, \"127.0.0.1:9876;192.168.0.1:9876\"%n",
-                        namesrvAddr);
-                    System.exit(-3);
-                }
+                checkNsAddrs(namesrvAddr);
             }
-
+            // 3.5 消息存储服务配置
+            // BK实例的角色处理 主master固定只有一个
             switch (messageStoreConfig.getBrokerRole()) {
                 case ASYNC_MASTER:
                 case SYNC_MASTER:
@@ -172,17 +163,17 @@ public class BrokerStartup {
                         System.out.printf("Slave's brokerId must be > 0");
                         System.exit(-3);
                     }
-
                     break;
                 default:
                     break;
             }
-
             if (messageStoreConfig.isEnableDLegerCommitLog()) {
                 brokerConfig.setBrokerId(-1);
             }
 
             messageStoreConfig.setHaListenPort(nettyServerConfig.getListenPort() + 1);
+
+            // 4 初始化slf4j日志框架的相关配置，并创建日志实例来打印配置信息
             LoggerContext lc = (LoggerContext) LoggerFactory.getILoggerFactory();
             JoranConfigurator configurator = new JoranConfigurator();
             configurator.setContext(lc);
@@ -211,20 +202,25 @@ public class BrokerStartup {
             MixAll.printObjectProperties(log, nettyClientConfig);
             MixAll.printObjectProperties(log, messageStoreConfig);
 
+            // 5 创建bk控制器
             final BrokerController controller = new BrokerController(
                 brokerConfig,
                 nettyServerConfig,
                 nettyClientConfig,
                 messageStoreConfig);
-            // remember all configs to prevent discard
+            // 将所有配置属性，合并到控制器的 allConfigs 里边去，归档记录一下
+            // todo vate: 特么每次启动都会搞一次的...持久化的意义在哪？ 2023-04-07 00:12:12
             controller.getConfiguration().registerConfig(properties);
 
+            // 初始化，初始化后面再启动
+            // 📢：这整个方法，最核心的逻辑
             boolean initResult = controller.initialize();
             if (!initResult) {
                 controller.shutdown();
                 System.exit(-3);
             }
 
+            // 6 注册一个jvm的关闭钩子，当jvm要关闭前，会启动这个线程，来执行我们的收尾工作
             Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
                 private volatile boolean hasShutdown = false;
                 private AtomicInteger shutdownTimes = new AtomicInteger(0);
@@ -251,6 +247,47 @@ public class BrokerStartup {
         }
 
         return null;
+    }
+
+    private static void checkNsAddrs(String namesrvAddr) {
+        try {
+            String[] addrArray = namesrvAddr.split(";");
+            for (String addr : addrArray) {
+                RemotingUtil.string2SocketAddress(addr);
+            }
+        } catch (Exception e) {
+            System.out.printf(
+                "The Name Server Address[%s] illegal, please set it as follows, \"127.0.0.1:9876;192.168.0.1:9876\"%n",
+                namesrvAddr
+            );
+            System.exit(-3);
+        }
+    }
+
+    private static void initCustomConfig(
+        BrokerConfig brokerConfig,
+        NettyServerConfig nettyServerConfig,
+        NettyClientConfig nettyClientConfig,
+        MessageStoreConfig messageStoreConfig
+    ) throws IOException {
+        if (commandLine.hasOption('c')) {
+            String file = commandLine.getOptionValue('c');
+            if (file != null) {
+                configFile = file;
+                InputStream in = new BufferedInputStream(new FileInputStream(file));
+                properties = new Properties();
+                properties.load(in);
+
+                properties2SystemEnv(properties);
+                MixAll.properties2Object(properties, brokerConfig);
+                MixAll.properties2Object(properties, nettyServerConfig);
+                MixAll.properties2Object(properties, nettyClientConfig);
+                MixAll.properties2Object(properties, messageStoreConfig);
+
+                BrokerPathConfigHelper.setBrokerConfigPath(file);
+                in.close();
+            }
+        }
     }
 
     private static void properties2SystemEnv(Properties properties) {

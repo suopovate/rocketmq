@@ -16,6 +16,8 @@
  */
 package org.apache.rocketmq.store.config;
 
+import org.apache.rocketmq.store.DefaultMessageStore;
+
 import java.io.File;
 
 public class StorePathConfigHelper {
@@ -36,6 +38,11 @@ public class StorePathConfigHelper {
         return rootDir + File.separator + "checkpoint";
     }
 
+    /**
+     * 在启动时，创建abort文件，在正常退出时，删除这个文件，如果是断电或者强行关闭等非正常退出，就不会删除这个文件，
+     * 下一次启动时，就需要执行 abnormalRecover
+     * @see DefaultMessageStore#shutdown()
+     */
     public static String getAbortFile(final String rootDir) {
         return rootDir + File.separator + "abort";
     }

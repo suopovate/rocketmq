@@ -139,6 +139,9 @@ public class DefaultMQPullConsumerImpl implements MQConsumerInner {
         return this.mQClientFactory.getMQAdminImpl().fetchPublishMessageQueues(topic);
     }
 
+    /**
+     * 本地没有就拉，本地有就不拉了...
+     */
     public Set<MessageQueue> fetchSubscribeMessageQueues(String topic) throws MQClientException {
         this.isRunning();
         // check if has info in memory, otherwise invoke api.

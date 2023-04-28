@@ -60,9 +60,15 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
     private final DefaultMQPushConsumer defaultMQPushConsumer;
     private final MessageListenerOrderly messageListener;
     private final BlockingQueue<Runnable> consumeRequestQueue;
+    /**
+     * 消费执行器，消费消息用的
+     */
     private final ThreadPoolExecutor consumeExecutor;
     private final String consumerGroup;
     private final MessageQueueLock messageQueueLock = new MessageQueueLock();
+    /**
+     * 执行定时任务用的
+     */
     private final ScheduledExecutorService scheduledExecutorService;
     private volatile boolean stopped = false;
 
@@ -87,11 +93,26 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
     }
 
     public void start() {
+        // 源码体现出来了，顺序消费，只针对集群模式有效！
+        // 针对顺序消费模式，会定时去主动锁mq
+
+        // 对于广播模式，因为没有这里的逻辑，所以虽然分配到队列，
+        // 但是由于没有执行这里的 续锁操作，就导致 pq 里的 getLocked 永远返回false...
+        // 然后在 DefaultMQPushConsumerImpl.pullMessage 方法内，如果是顺序消费，就会检查 pq.getLocked() ... 如果false，就不会拉
+
+        // 为什么上面说广播模式，会locked永远false呢...因为新增一个mq的时候，去bk加锁，并不会给pq set locked...
+        // see: RebalanceImpl.lock()、RebalanceImpl.updateProcessQueueTableInRebalance()，方法就知道了
+
+        // 这里还有个很有意思的，就是 延迟 1 秒再执行，而不是立马执行，为什么呢，其实这么做是有意为之，因为 消费者初次启动时，
+        // 都会 通过 reblanceImpl 去分配队列，并且在bk端上锁，但是，如果是第一次分配mq给消费者，即使上锁了bk，也不会把 pq 设置成 true...
+        // 我觉得那个pq不设置的，算是个逻辑漏洞...
+        // ok，反正就是有这么个情况，那怎么办呢？那这里就取巧...那就延迟一秒执行 续锁，因为续锁的时候，就会把 pq 的locked 设置为true了，
+        // 这时候 pullMessageService 就可以立马拉到消息了 (但是第一次拉消息，肯定会失败，因为locked很可能为false，只是说很可能哈)
         if (MessageModel.CLUSTERING.equals(ConsumeMessageOrderlyService.this.defaultMQPushConsumerImpl.messageModel())) {
             this.scheduledExecutorService.scheduleAtFixedRate(new Runnable() {
                 @Override
                 public void run() {
-                    ConsumeMessageOrderlyService.this.lockMQPeriodically();
+                    lockMQPeriodically();
                 }
             }, 1000 * 1, ProcessQueue.REBALANCE_LOCK_INTERVAL, TimeUnit.MILLISECONDS);
         }
@@ -193,6 +214,9 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
         return result;
     }
 
+    /**
+     * 将拉到的消息提交给服务线程池队列
+     */
     @Override
     public void submitConsumeRequest(
         final List<MessageExt> msgs,
@@ -205,6 +229,13 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
         }
     }
 
+    /**
+     * periodically 周期性地
+     *
+     * 定期对分配给本客户端的mq进行加锁，防止锁过期。
+     *
+     * 因为在bk端，分布式锁是会过期的，默认是三十秒。
+     */
     public synchronized void lockMQPeriodically() {
         if (!this.stopped) {
             this.defaultMQPushConsumerImpl.getRebalanceImpl().lockAll();
@@ -266,6 +297,7 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
         final ConsumeRequest consumeRequest
     ) {
         boolean continueConsume = true;
+        // 要提交到服务端的位点，对应的是下一条待处理的消息
         long commitOffset = -1L;
         if (context.isAutoCommit()) {
             switch (status) {
@@ -281,12 +313,14 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
                     this.getConsumerStatsManager().incConsumeFailedTPS(consumerGroup, consumeRequest.getMessageQueue().getTopic(), msgs.size());
                     if (checkReconsumeTimes(msgs)) {
                         consumeRequest.getProcessQueue().makeMessageToConsumeAgain(msgs);
+                        // 提交一个重试请求
                         this.submitConsumeRequestLater(
                             consumeRequest.getProcessQueue(),
                             consumeRequest.getMessageQueue(),
                             context.getSuspendCurrentQueueTimeMillis());
                         continueConsume = false;
                     } else {
+                        // 走到这里 就是这一批消息，已经全部到达了
                         commitOffset = consumeRequest.getProcessQueue().commit();
                     }
                     break;
@@ -345,6 +379,15 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
         }
     }
 
+    /**
+     * 检查每一条消息的重试次数是否已经大于最大可重试次数
+     * 1. 如果大于就发一条消息给服务端，发失败就本地继续重试。
+     * 2. 如果小于就记录次数
+     *
+     * 假如所有消息都发给了服务端才Ok，返回false,不需要挂起，否则都要挂起。
+     * 1. 有部分消息发回成功，挂起(不会出问题么...)
+     * 2. 全部消息发回成功，不挂起
+     */
     private boolean checkReconsumeTimes(List<MessageExt> msgs) {
         boolean suspend = false;
         if (msgs != null && !msgs.isEmpty()) {
@@ -412,18 +455,34 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
             return messageQueue;
         }
 
+        /**
+         * 整体流程：
+         * 1. pull服务拉到了mq的一批消息，存入pq，构建了一条消息放入处理队列（按道理，同一个mq，同时间只有一个请求）
+         * 2. cms服务，处理队列的消息消费请求，进入本方法
+         * 3. 先针对本地全局加锁，如果是广播模式，则直接消费即可，否则需要对 分布式集群 加 mq 锁，确保整个集群只有一个线程消费mq
+         * 4. 分批次，按位点顺序，处理本批消息，如果前一批处理失败，那么就根据处理策略处理，正常是创建一个请求延迟再处理本批所有消息，同时不处理后一块消息，本次请求中断。
+         * 5. 重复2
+         *
+         * 这里有个很重要的点，就是要确保下，第一个请求的构建应该针对一个mq只创建了一个拉取请求，且要确认下后续是如何继续拉取的，因为要保证拉取的顺序，先处理完前一批才能处理下一批消息。
+         *
+         * pull请求逻辑：当启动时，或者mq新加入消费者时，会触发一次mq的pull请求，
+         */
         @Override
         public void run() {
+            // 顺序消费是从pq缓存里边取消息，并发消费，是直接拿pull下的消息列表
             if (this.processQueue.isDropped()) {
                 log.warn("run, the message queue not be able to consume, because it's dropped. {}", this.messageQueue);
                 return;
             }
-
+            // 每个队列都有一把锁，保证同一时间，只有一个线程在消费这个队列的消息,达到顺序消费的目的，这个是锁本地
             final Object objLock = messageQueueLock.fetchLockObject(this.messageQueue);
             synchronized (objLock) {
+                // 对于非广播模式，判断是否该消息，已加mq分布式锁，保证对于同一个mq，在当前消费者组里边，也同时只有一个线程在消费
                 if (MessageModel.BROADCASTING.equals(ConsumeMessageOrderlyService.this.defaultMQPushConsumerImpl.messageModel())
                     || (this.processQueue.isLocked() && !this.processQueue.isLockExpired())) {
                     final long beginTime = System.currentTimeMillis();
+                    // 哦，是否继续处理下一条，每一条处理前，都判断下分布式锁在不在。
+                    // 这里主要是如果前一批消息，处理异常了，就不用往下消费了
                     for (boolean continueConsume = true; continueConsume; ) {
                         if (this.processQueue.isDropped()) {
                             log.warn("the message queue not be able to consume, because it's dropped. {}", this.messageQueue);
@@ -549,7 +608,7 @@ public class ConsumeMessageOrderlyService implements ConsumeMessageService {
                         log.warn("the message queue not be able to consume, because it's dropped. {}", this.messageQueue);
                         return;
                     }
-
+                    // 走到这里说明 processQueue锁失效了，那就待会再来
                     ConsumeMessageOrderlyService.this.tryLockLaterAndReconsume(this.messageQueue, this.processQueue, 100);
                 }
             }

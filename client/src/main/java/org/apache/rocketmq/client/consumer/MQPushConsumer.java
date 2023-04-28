@@ -22,6 +22,12 @@ import org.apache.rocketmq.client.consumer.listener.MessageListenerOrderly;
 import org.apache.rocketmq.client.exception.MQClientException;
 
 /**
+ * 对外的一个Mq消费者抽象，推送消费模式。
+ *
+ * 这种是阿里官方提倡的方式，即对用户来说，是“推”的，用户只能被动的接受消息的推送。
+ *
+ * 对用户而言，分为两种消费模式，顺序和并发，这也是很容易搞错的地方。
+ *
  * Push consumer
  */
 public interface MQPushConsumer extends MQConsumer {

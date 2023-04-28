@@ -40,7 +40,10 @@ public class ConsumeQueue {
 
     private final String storePath;
     private final int mappedFileSize;
-    private long maxPhysicOffset = -1;
+    /**
+     * 本队列中，最大的有效的条目，在commitLog中的位置
+     */
+    private long maxCommitLogOffset = -1;
     private volatile long minLogicOffset = 0;
     private ConsumeQueueExt consumeQueueExt = null;
 
@@ -85,29 +88,58 @@ public class ConsumeQueue {
         return result;
     }
 
+    /**
+     * 📢 恢复逻辑其实就是清除脏数据的逻辑，找到最后的那条正常的数据，然后删除这条数据后面的所有数据，就是恢复。
+     *
+     * 📢 这里有一个点，就是没有考虑消息在cmq中，但是不在cml中这种情况的检测，不过也是，这种检测很耗时，我怀疑这种情况：
+     *    1. 要么不会发生cmq中有，cml中没有的情况
+     *    2. 要么就是发生了，但是，在查询消息的时候，对这块做了一下容错处理？
+     *
+     * 搜索当前队列的目录，找到最后一个有效的可写的mf，并将其可写的位置，设置到mfq中
+     * 顺便也找到了当前队列中，最大的提交日志位点 maxCommitLogOffset
+     *
+     * this.mappedFileQueue.setFlushedWhere(processedOffset);
+     * this.mappedFileQueue.setCommittedWhere(processedOffset);
+     * // 清理掉后续那些
+     * this.mappedFileQueue.truncateDirtyFiles(processedOffset);
+     */
     public void recover() {
         final List<MappedFile> mappedFiles = this.mappedFileQueue.getMappedFiles();
         if (!mappedFiles.isEmpty()) {
 
+            // 倒数第三个元素开始
             int index = mappedFiles.size() - 3;
             if (index < 0)
                 index = 0;
 
             int mappedFileSizeLogics = this.mappedFileSize;
             MappedFile mappedFile = mappedFiles.get(index);
+            // 这个时候 mf的mfbuf应该position为0，limit为文件大小的
             ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
-            long processOffset = mappedFile.getFileFromOffset();
-            long mappedFileOffset = 0;
+            // 已经处理完成的数据偏移量，这里有个tips: 这个值会在每次开始扫描一个文件前，设置为这个文件的 fromOffset，
+            long processedOffset = mappedFile.getFileFromOffset();
+            // 在当前文件内的偏移量 mf的fileFromOffset <= currentMfOffset <= mf的fileFromOffset + mappedFileSize
+            // 这个，代表当前这个文件，最后一条正常的记录的位置
+            long currentMfOffset = 0;
             long maxExtAddr = 1;
             while (true) {
+                // 遍历该文件
                 for (int i = 0; i < mappedFileSizeLogics; i += CQ_STORE_UNIT_SIZE) {
                     long offset = byteBuffer.getLong();
                     int size = byteBuffer.getInt();
                     long tagsCode = byteBuffer.getLong();
 
+                    // 这里就是很核心的一句，offset >= 0 且 size > 0，为什么是 = 0?因为提交日志位点是从0开始，为什么判断size?因为消息size必须大于0
+                    // 为什么要这样判断呢？因为默认情况下整个mf文件，除了写过的位置，其他部分都被初始化为0
+                    // size有了，至少保证了offset数据是正常的
+
+                    // 这里有个情况，因为断电的数据缺失，也往往是缺失最后面那一点儿，所以如果当前是正常的，就看下一个条目，
+                    // 否则，我们就认为当前不正常，然后清除前一条(currentMfOffset)后面的所有数据
                     if (offset >= 0 && size > 0) {
-                        mappedFileOffset = i + CQ_STORE_UNIT_SIZE;
-                        this.maxPhysicOffset = offset + size;
+                        // currentMfOffset 增长，指向下一个条目
+                        currentMfOffset = i + CQ_STORE_UNIT_SIZE;
+                        // 指向commitLog中的offset，在这里增长
+                        this.maxCommitLogOffset = offset + size;
                         if (isExtAddr(tagsCode)) {
                             maxExtAddr = tagsCode;
                         }
@@ -117,32 +149,40 @@ public class ConsumeQueue {
                         break;
                     }
                 }
-
-                if (mappedFileOffset == mappedFileSizeLogics) {
+                // 文件遍历完，则说明该文件的数据都是正常的,如果是最后一个文件，数据没写完，应该是走不到这里来的
+                if (currentMfOffset == mappedFileSizeLogics) {
+                    // index自增
                     index++;
+                    // index = mappedfiles.size，不就意味着 所有文件都写满了，且数据都正常，边界问题，正常退出
                     if (index >= mappedFiles.size()) {
-
                         log.info("recover last consume queue file over, last mapped file "
                             + mappedFile.getFileName());
                         break;
                     } else {
+                        // 走到这里，说明当前文件没问题，扫描下一个文件
                         mappedFile = mappedFiles.get(index);
                         byteBuffer = mappedFile.sliceByteBuffer();
-                        processOffset = mappedFile.getFileFromOffset();
-                        mappedFileOffset = 0;
+                        // 这一句很关键了，每扫描一个文件前，就将 processedOffset 设置为该文件的fromOffset
+                        processedOffset = mappedFile.getFileFromOffset();
+                        currentMfOffset = 0;
                         log.info("recover next consume queue file, " + mappedFile.getFileName());
                     }
                 } else {
+                    // 发现某个文件遍历不完，就说明最后一条
                     log.info("recover current consume queue queue over " + mappedFile.getFileName() + " "
-                        + (processOffset + mappedFileOffset));
+                        + (processedOffset + currentMfOffset));
                     break;
                 }
             }
 
-            processOffset += mappedFileOffset;
-            this.mappedFileQueue.setFlushedWhere(processOffset);
-            this.mappedFileQueue.setCommittedWhere(processOffset);
-            this.mappedFileQueue.truncateDirtyFiles(processOffset);
+            // 走到这里的话呢，processedOffset 肯定是指向最后一个被扫描到有效的文件的fileFromOffset了，
+            // currentMfOffset则记录的是当前这个文件最后可用的条目的，下一个条目的位置
+            // 所以 下面这条语句得到的 就是 这个文件下一个可写的位置
+            processedOffset += currentMfOffset;
+            this.mappedFileQueue.setFlushedWhere(processedOffset);
+            this.mappedFileQueue.setCommittedWhere(processedOffset);
+            // 清理掉后面的脏数据
+            this.mappedFileQueue.truncateDirtyFiles(processedOffset);
 
             if (isExtReadEnable()) {
                 this.consumeQueueExt.recover();
@@ -225,7 +265,7 @@ public class ConsumeQueue {
 
         int logicFileSize = this.mappedFileSize;
 
-        this.maxPhysicOffset = phyOffet;
+        this.maxCommitLogOffset = phyOffet;
         long maxExtAddr = 1;
         while (true) {
             MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile();
@@ -250,7 +290,7 @@ public class ConsumeQueue {
                             mappedFile.setWrotePosition(pos);
                             mappedFile.setCommittedPosition(pos);
                             mappedFile.setFlushedPosition(pos);
-                            this.maxPhysicOffset = offset + size;
+                            this.maxCommitLogOffset = offset + size;
                             // This maybe not take effect, when not every consume queue has extend file.
                             if (isExtAddr(tagsCode)) {
                                 maxExtAddr = tagsCode;
@@ -268,7 +308,7 @@ public class ConsumeQueue {
                             mappedFile.setWrotePosition(pos);
                             mappedFile.setCommittedPosition(pos);
                             mappedFile.setFlushedPosition(pos);
-                            this.maxPhysicOffset = offset + size;
+                            this.maxCommitLogOffset = offset + size;
                             if (isExtAddr(tagsCode)) {
                                 maxExtAddr = tagsCode;
                             }
@@ -336,19 +376,30 @@ public class ConsumeQueue {
         return cnt;
     }
 
+    /**
+     * 基于cml的最小消息位点，矫正cmq的最小有效位点(针对cmq的项)
+     * 因为cml如果没有了这条消息，cmq还保存就没意义了。
+     */
     public void correctMinOffset(long phyMinOffset) {
+        // cmq 的最小文件
         MappedFile mappedFile = this.mappedFileQueue.getFirstMappedFile();
         long minExtAddr = 1;
         if (mappedFile != null) {
+            // 文件的可读范围
             SelectMappedBufferResult result = mappedFile.selectMappedBuffer(0);
             if (result != null) {
                 try {
+                    // 遍历该文件的所有条目
                     for (int i = 0; i < result.getSize(); i += ConsumeQueue.CQ_STORE_UNIT_SIZE) {
+                        // 对应cml的位点
                         long offsetPy = result.getByteBuffer().getLong();
                         result.getByteBuffer().getInt();
                         long tagsCode = result.getByteBuffer().getLong();
 
+                        // 找到 大于 phyMinOffset 的 最早的那个cmq的条目
                         if (offsetPy >= phyMinOffset) {
+                            // 相当于是矫正数据了，重新设置 cmq的 最小条目，更早的 其实就没意义了，因为cml中都没有了
+                            // 📢 小于 minLogicOffset 的cmq的条目，应该都是不能查的了
                             this.minLogicOffset = mappedFile.getFileFromOffset() + i;
                             log.info("Compute logical min offset: {}, topic: {}, queueId: {}",
                                 this.getMinOffsetInQueue(), this.topic, this.queueId);
@@ -397,6 +448,7 @@ public class ConsumeQueue {
             }
             boolean result = this.putMessagePositionInfo(request.getCommitLogOffset(),
                 request.getMsgSize(), tagsCode, request.getConsumeQueueOffset());
+            // 更新stockcheckpoint中的cmq存储时间戳
             if (result) {
                 if (this.defaultMessageStore.getMessageStoreConfig().getBrokerRole() == BrokerRole.SLAVE ||
                     this.defaultMessageStore.getMessageStoreConfig().isEnableDLegerCommitLog()) {
@@ -422,11 +474,21 @@ public class ConsumeQueue {
         this.defaultMessageStore.getRunningFlags().makeLogicsQueueError();
     }
 
+    /**
+     * 把消息条目存储到cmq中
+     * @param offset
+     * @param size
+     * @param tagsCode
+     * @param cqOffset 消息队列条目的位点(非字节)
+     * @return
+     */
     private boolean putMessagePositionInfo(final long offset, final int size, final long tagsCode,
         final long cqOffset) {
-
-        if (offset + size <= this.maxPhysicOffset) {
-            log.warn("Maybe try to build consume queue repeatedly maxPhysicOffset={} phyOffset={}", maxPhysicOffset, offset);
+        // todo vate: 待看 2023-01-15 01:29:41
+        // 防止重复构建，如果要构建的项的cml位点小于本cmq中记录的最大cml位点，就不再构建
+        if (offset + size <= this.maxCommitLogOffset) {
+            log.warn("Maybe try to build consume queue repeatedly maxPhysicOffset={} phyOffset={}",
+                     maxCommitLogOffset, offset);
             return true;
         }
 
@@ -436,6 +498,7 @@ public class ConsumeQueue {
         this.byteBufferIndex.putInt(size);
         this.byteBufferIndex.putLong(tagsCode);
 
+        // 下一个要写的cmq的字节位点
         final long expectLogicOffset = cqOffset * CQ_STORE_UNIT_SIZE;
 
         MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile(expectLogicOffset);
@@ -453,12 +516,15 @@ public class ConsumeQueue {
             if (cqOffset != 0) {
                 long currentLogicOffset = mappedFile.getWrotePosition() + mappedFile.getFileFromOffset();
 
+                // 要写入的cmq项小于当前最大的已写入cmq项的位置，判断是重复写入，忽略
                 if (expectLogicOffset < currentLogicOffset) {
                     log.warn("Build  consume queue repeatedly, expectLogicOffset: {} currentLogicOffset: {} Topic: {} QID: {} Diff: {}",
                         expectLogicOffset, currentLogicOffset, this.topic, this.queueId, expectLogicOffset - currentLogicOffset);
                     return true;
                 }
 
+                // 要写入的项的位置，大于当前的最大项了，说明cmq的数据出现问题了，拒绝写入，error告警
+                // 这种情况，应该是不会出现，除非人为破坏
                 if (expectLogicOffset != currentLogicOffset) {
                     LOG_ERROR.warn(
                         "[BUG]logic queue order maybe wrong, expectLogicOffset: {} currentLogicOffset: {} Topic: {} QID: {} Diff: {}",
@@ -470,7 +536,8 @@ public class ConsumeQueue {
                     );
                 }
             }
-            this.maxPhysicOffset = offset + size;
+            this.maxCommitLogOffset = offset + size;
+            // 写入文件，不保证刷盘
             return mappedFile.appendMessage(this.byteBufferIndex.array());
         }
         return false;
@@ -537,16 +604,16 @@ public class ConsumeQueue {
         return queueId;
     }
 
-    public long getMaxPhysicOffset() {
-        return maxPhysicOffset;
+    public long getMaxCommitLogOffset() {
+        return maxCommitLogOffset;
     }
 
-    public void setMaxPhysicOffset(long maxPhysicOffset) {
-        this.maxPhysicOffset = maxPhysicOffset;
+    public void setMaxCommitLogOffset(long maxCommitLogOffset) {
+        this.maxCommitLogOffset = maxCommitLogOffset;
     }
 
     public void destroy() {
-        this.maxPhysicOffset = -1;
+        this.maxCommitLogOffset = -1;
         this.minLogicOffset = 0;
         this.mappedFileQueue.destroy();
         if (isExtReadEnable()) {

@@ -101,6 +101,9 @@ public class ScheduleMessageService extends ConfigManager {
         this.offsetTable.put(delayLevel, offset);
     }
 
+    /**
+     * 基于存储时间，计算实际投递时间
+     */
     public long computeDeliverTimestamp(final int delayLevel, final long storeTimestamp) {
         Long time = this.delayLevelTable.get(delayLevel);
         if (time != null) {
@@ -295,7 +298,7 @@ public class ScheduleMessageService extends ConfigManager {
                             long deliverTimestamp = this.correctDeliverTimestamp(now, tagsCode);
 
                             nextOffset = offset + (i / ConsumeQueue.CQ_STORE_UNIT_SIZE);
-
+                            // 如果countdown大于0，那就休息一阵再说
                             long countdown = deliverTimestamp - now;
 
                             if (countdown <= 0) {
@@ -311,6 +314,7 @@ public class ScheduleMessageService extends ConfigManager {
                                                     msgInner.getTopic(), msgInner);
                                             continue;
                                         }
+                                        // 将消息投递到commitLog中
                                         PutMessageResult putMessageResult =
                                             ScheduleMessageService.this.writeMessageStore
                                                 .putMessage(msgInner);
@@ -339,9 +343,6 @@ public class ScheduleMessageService extends ConfigManager {
                                     } catch (Exception e) {
                                         /*
                                          * XXX: warn and notify me
-
-
-
                                          */
                                         log.error(
                                             "ScheduleMessageService, messageTimeup execute error, drop it. msgExt="

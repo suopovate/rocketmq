@@ -23,6 +23,9 @@ public class PullRequest {
     private MessageQueue messageQueue;
     private ProcessQueue processQueue;
     private long nextOffset;
+    /**
+     *  这个其实就是，第一次拉取的时候，要做一些逻辑，只针对顺序消费
+     */
     private boolean previouslyLocked = false;
 
     public boolean isPreviouslyLocked() {

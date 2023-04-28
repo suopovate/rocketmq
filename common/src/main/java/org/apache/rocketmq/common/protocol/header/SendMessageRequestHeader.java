@@ -25,7 +25,13 @@ import org.apache.rocketmq.remoting.annotation.CFNotNull;
 import org.apache.rocketmq.remoting.annotation.CFNullable;
 import org.apache.rocketmq.remoting.exception.RemotingCommandException;
 
+/**
+ * 这里面很多字段和消息存储在commitLog中的内容是一致的
+ */
 public class SendMessageRequestHeader implements CommandCustomHeader {
+    /**
+     * 生产组
+     */
     @CFNotNull
     private String producerGroup;
     @CFNotNull
@@ -42,14 +48,29 @@ public class SendMessageRequestHeader implements CommandCustomHeader {
     private Long bornTimestamp;
     @CFNotNull
     private Integer flag;
+    /**
+     * 消息属性
+     */
     @CFNullable
     private String properties;
+    /**
+     * 重复消费次数(客户端异常啥的，可以重试)
+     */
     @CFNullable
     private Integer reconsumeTimes;
+    /**
+     * ?
+     */
     @CFNullable
     private boolean unitMode = false;
+    /**
+     * 批量消息
+     */
     @CFNullable
     private boolean batch = false;
+    /**
+     * 最大可重复消费次数
+     */
     private Integer maxReconsumeTimes;
 
     @Override

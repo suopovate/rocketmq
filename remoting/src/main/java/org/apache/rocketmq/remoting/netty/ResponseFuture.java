@@ -24,6 +24,9 @@ import org.apache.rocketmq.remoting.InvokeCallback;
 import org.apache.rocketmq.remoting.common.SemaphoreReleaseOnlyOnce;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 
+/**
+ * 调用远端服务时，抽象出来的响应体future
+ */
 public class ResponseFuture {
     private final int opaque;
     private final Channel processChannel;

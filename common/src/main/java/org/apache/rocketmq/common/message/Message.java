@@ -185,6 +185,11 @@ public class Message implements Serializable {
         return properties;
     }
 
+    /**
+     * 这个方法被设置成了 默认访问权限，default
+     * 只有同包 || 同类 || 子类可以访问
+     * 意欲何为？还搞了个 MessageAccessor 来访问这个方法...属实多此一举
+     */
     void setProperties(Map<String, String> properties) {
         this.properties = properties;
     }

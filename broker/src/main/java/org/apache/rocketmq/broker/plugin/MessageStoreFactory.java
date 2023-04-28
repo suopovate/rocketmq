@@ -19,6 +19,8 @@ package org.apache.rocketmq.broker.plugin;
 
 import java.io.IOException;
 import java.lang.reflect.Constructor;
+
+import com.sun.xml.internal.ws.api.streaming.XMLStreamReaderFactory;
 import org.apache.rocketmq.store.MessageStore;
 
 public final class MessageStoreFactory {
@@ -30,10 +32,10 @@ public final class MessageStoreFactory {
             for (int i = pluginClasses.length - 1; i >= 0; --i) {
                 String pluginClass = pluginClasses[i];
                 try {
-                    @SuppressWarnings("unchecked")
-                    Class<AbstractPluginMessageStore> clazz = (Class<AbstractPluginMessageStore>) Class.forName(pluginClass);
-                    Constructor<AbstractPluginMessageStore> construct = clazz.getConstructor(MessageStorePluginContext.class, MessageStore.class);
-                    messageStore = construct.newInstance(context, messageStore);
+                    Class<?> clazz = Class.forName(pluginClass);
+                    Constructor<?> construct = clazz.getConstructor(MessageStorePluginContext.class, MessageStore.class);
+                    assert AbstractPluginMessageStore.class.isAssignableFrom(clazz);
+                    messageStore = (MessageStore) construct.newInstance(context, messageStore);
                 } catch (Throwable e) {
                     throw new RuntimeException(String.format(
                         "Initialize plugin's class %s not found!", pluginClass), e);
@@ -42,4 +44,5 @@ public final class MessageStoreFactory {
         }
         return messageStore;
     }
+
 }

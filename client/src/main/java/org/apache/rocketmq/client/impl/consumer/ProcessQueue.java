@@ -37,17 +37,28 @@ import org.apache.rocketmq.common.protocol.body.ProcessQueueInfo;
 
 /**
  * Queue consumption snapshot
+ * 队列消耗快照
  */
 public class ProcessQueue {
     public final static long REBALANCE_LOCK_MAX_LIVE_TIME =
         Long.parseLong(System.getProperty("rocketmq.client.rebalance.lockMaxLiveTime", "30000"));
+    /**
+     * 对于顺序消费的模式，每个顺序消费服务，会定时刷新其对应消费者组下所有的mq的锁。
+     * 并发消费不需要对mq加锁。
+     */
     public final static long REBALANCE_LOCK_INTERVAL = Long.parseLong(System.getProperty("rocketmq.client.rebalance.lockInterval", "20000"));
     private final static long PULL_MAX_IDLE_TIME = Long.parseLong(System.getProperty("rocketmq.client.pull.pullMaxIdleTime", "120000"));
     private final InternalLogger log = ClientLogger.getLog();
     private final ReadWriteLock treeMapLock = new ReentrantReadWriteLock();
+    /**
+     * 基于位点排序的一颗树，可以用来计算第一条消息和最后一条消息的位点跨度
+     */
     private final TreeMap<Long, MessageExt> msgTreeMap = new TreeMap<Long, MessageExt>();
     private final AtomicLong msgCount = new AtomicLong();
     private final AtomicLong msgSize = new AtomicLong();
+    /**
+     * 顺序消费时，会用到该锁
+     */
     private final Lock consumeLock = new ReentrantLock();
     /**
      * A subset of msgTreeMap, will only be used when orderly consume
@@ -58,9 +69,18 @@ public class ProcessQueue {
     private volatile boolean dropped = false;
     private volatile long lastPullTimestamp = System.currentTimeMillis();
     private volatile long lastConsumeTimestamp = System.currentTimeMillis();
+    /**
+     * 当前客户端，是否成功在Bk锁住了这个mq，防止多个消费者消费到同一个mq
+     */
     private volatile boolean locked = false;
     private volatile long lastLockTimestamp = System.currentTimeMillis();
+    /**
+     * 是否正在被消费
+     */
     private volatile boolean consuming = false;
+    /**
+     * 记录当前缓存中，待消费的消息数
+     */
     private volatile long msgAccCnt = 0;
 
     public boolean isLockExpired() {
@@ -124,6 +144,9 @@ public class ProcessQueue {
         }
     }
 
+    /**
+     * 该方法会加锁，不会并发
+     */
     public boolean putMessage(final List<MessageExt> msgs) {
         boolean dispatchToConsume = false;
         try {
@@ -257,6 +280,9 @@ public class ProcessQueue {
         }
     }
 
+    /**
+     * 加锁，清空顺序消费消息临时记录表，并且返回消费完的最后一条消息的位点 + 1(即下一条消息的位点)
+     */
     public long commit() {
         try {
             this.treeMapLock.writeLock().lockInterruptibly();

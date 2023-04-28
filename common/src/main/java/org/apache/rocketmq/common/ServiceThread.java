@@ -140,6 +140,9 @@ public abstract class ServiceThread implements Runnable {
         }
     }
 
+    /**
+     * 阻塞线程一段时间，除非任务被唤醒
+     */
     protected void waitForRunning(long interval) {
         if (hasNotified.compareAndSet(true, false)) {
             this.onWaitEnd();

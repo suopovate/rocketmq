@@ -64,7 +64,7 @@ public class TransientStorePool {
 
             final long address = ((DirectBuffer) byteBuffer).address();
             Pointer pointer = new Pointer(address);
-            // 应该是分配内存空间 加锁?
+            // 锁住内存 防止swap置换，比较消耗性能
             LibC.INSTANCE.mlock(pointer, new NativeLong(fileSize));
 
             availableBuffers.offer(byteBuffer);

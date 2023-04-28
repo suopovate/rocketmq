@@ -28,11 +28,17 @@ import java.util.Set;
 
 public class SubscriptionData implements Comparable<SubscriptionData> {
     public final static String SUB_ALL = "*";
+    /**
+     * 类过滤模式，是Bk端过滤。
+     */
     private boolean classFilterMode = false;
     private String topic;
     private String subString;
     private Set<String> tagsSet = new HashSet<String>();
     private Set<Integer> codeSet = new HashSet<Integer>();
+    /**
+     * 这个值一样，就意味着这个订阅 没有变化，如果这个值变了，就意味着这个订阅变了!
+     */
     private long subVersion = System.currentTimeMillis();
     private String expressionType = ExpressionType.TAG;
 

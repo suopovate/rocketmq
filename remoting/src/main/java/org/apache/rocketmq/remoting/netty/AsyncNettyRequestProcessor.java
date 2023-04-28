@@ -23,7 +23,10 @@ import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 public abstract class AsyncNettyRequestProcessor implements NettyRequestProcessor {
 
     /**
-     * 在一个异步的线程中处理，然后回调给回调对象
+     * 涉及应该是希望，在一个异步的线程中处理，然后回调给回调对象
+     * 但是这里的默认实现，其实就是个同步的...
+     * 至于异步的实现，则是交由各个子类实现，这里只是做了个 异步的调用 形式
+     *
      * @param ctx
      * @param request
      * @param responseCallback

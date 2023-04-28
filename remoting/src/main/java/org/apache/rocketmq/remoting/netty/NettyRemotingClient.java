@@ -86,10 +86,16 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
     private final AtomicInteger namesrvIndex = new AtomicInteger(initValueIndex());
     private final Lock namesrvChannelLock = new ReentrantLock();
 
+    /**
+     * 默认线程池，
+     * 如果创建请求处理器时，未指定线程池，就会用这个
+     * 如果下面那个为空，也会返回这个
+     */
     private final ExecutorService publicExecutor;
 
     /**
      * Invoke the callback methods in this executor when process response.
+     * 当请求响应回来以后，在这个线程池里面，调用响应的后续处理
      */
     private ExecutorService callbackExecutor;
     private final ChannelEventListener channelEventListener;
@@ -351,6 +357,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
             }
 
             if (update) {
+                // 打乱地址顺序
                 Collections.shuffle(addrs);
                 log.info("name server address updated. NEW : {} , OLD: {}", addrs, old);
                 this.namesrvAddrList.set(addrs);

@@ -27,6 +27,9 @@ public class SemaphoreReleaseOnlyOnce {
         this.semaphore = semaphore;
     }
 
+    /**
+     * 添加一个信号量
+     */
     public void release() {
         if (this.semaphore != null) {
             if (this.released.compareAndSet(false, true)) {

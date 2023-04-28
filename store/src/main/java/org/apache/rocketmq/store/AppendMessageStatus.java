@@ -22,7 +22,7 @@ package org.apache.rocketmq.store;
 public enum AppendMessageStatus {
     PUT_OK,
     /**
-     * 这什么鬼错误？文件大小到顶？写到底了？？？
+     * 假如我们写入一条消息时，mappedFile的剩余空间，不足以让我们写入这条消息了，就返回这个状态
      */
     END_OF_FILE,
     /**

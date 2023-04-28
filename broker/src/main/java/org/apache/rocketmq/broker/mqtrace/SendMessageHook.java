@@ -16,6 +16,9 @@
  */
 package org.apache.rocketmq.broker.mqtrace;
 
+/**
+ * 消息发送时的钩子
+ */
 public interface SendMessageHook {
     String hookName();
 

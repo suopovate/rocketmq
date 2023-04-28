@@ -51,7 +51,9 @@ public class AllocateMessageQueueAveragely implements AllocateMessageQueueStrate
             return result;
         }
 
+        // 当前消费者在所有消费者中的idx
         int index = cidAll.indexOf(currentCID);
+        // 5 % 3 = 2
         int mod = mqAll.size() % cidAll.size();
         int averageSize =
             mqAll.size() <= cidAll.size() ? 1 : (mod > 0 && index < mod ? mqAll.size() / cidAll.size()

@@ -22,8 +22,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.*;
+
 import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.common.consumer.ConsumeFromWhere;
 import org.apache.rocketmq.logging.InternalLogger;
@@ -32,13 +32,25 @@ import org.apache.rocketmq.common.protocol.heartbeat.ConsumeType;
 import org.apache.rocketmq.common.protocol.heartbeat.MessageModel;
 import org.apache.rocketmq.common.protocol.heartbeat.SubscriptionData;
 
+/**
+ * 消费者组信息，注意 对应的是这个消费者组下所有消费者的情况
+ */
 public class ConsumerGroupInfo {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.BROKER_LOGGER_NAME);
     private final String groupName;
+    /**
+     * 当前消费者组的，topic-订阅规则
+     */
     private final ConcurrentMap<String/* Topic */, SubscriptionData> subscriptionTable =
         new ConcurrentHashMap<String, SubscriptionData>();
+    /**
+     * 当前消费者组的，消费者连接-连接详情
+     */
     private final ConcurrentMap<Channel, ClientChannelInfo> channelInfoTable =
         new ConcurrentHashMap<Channel, ClientChannelInfo>(16);
+    /**
+     * 有个问题，假如我同一个组，创建两个消费者，一个是pull，一个是push类型...咋办？
+     */
     private volatile ConsumeType consumeType;
     private volatile MessageModel messageModel;
     private volatile ConsumeFromWhere consumeFromWhere;
@@ -131,6 +143,7 @@ public class ConsumerGroupInfo {
 
             infoOld = infoNew;
         } else {
+            // 同一个通道 不同的客户端id???的确是bug，不该出现
             if (!infoOld.getClientId().equals(infoNew.getClientId())) {
                 log.error("[BUG] consumer channel exist in broker, but clientId not equal. GROUP: {} OLD: {} NEW: {} ",
                     this.groupName,
@@ -140,13 +153,18 @@ public class ConsumerGroupInfo {
             }
         }
 
+        // 更新info的最后更新时间
         this.lastUpdateTimestamp = System.currentTimeMillis();
         infoOld.setLastUpdateTimestamp(this.lastUpdateTimestamp);
 
         return updated;
     }
 
+    /**
+     * 更新当前消费者组的topic订阅情况
+     */
     public boolean updateSubscription(final Set<SubscriptionData> subList) {
+
         boolean updated = false;
 
         for (SubscriptionData sub : subList) {

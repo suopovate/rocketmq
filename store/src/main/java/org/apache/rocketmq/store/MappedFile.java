@@ -64,7 +64,7 @@ import sun.nio.ch.DirectBuffer;
 public class MappedFile extends ReferenceResource {
 
     /**
-     * 操作系统,内存中一个页的大小
+     * 操作系统,内存中一个页的大小 4k
      */
     public static final int OS_PAGE_SIZE = 1024 * 4;
 
@@ -84,15 +84,15 @@ public class MappedFile extends ReferenceResource {
 
 
     /**
-     * 写到了哪个位置(记录的是可写的第一个位置)
+     * 写到了哪个位置(记录的是可写的第一个位置)，这个位置不保证数据已经全部被落盘
      */
     protected final AtomicInteger wrotePosition = new AtomicInteger(0);
     /**
-     * 已经提交了缓冲区的数据到哪个位置 这个主要是 writeBuffer + fileChannel配合使用的
+     * 已经提交了缓冲区的数据到哪个位置 这个主要是 writeBuffer + fileChannel配合使用的，这个位置不保证数据已经全部被落盘
      */
     protected final AtomicInteger committedPosition = new AtomicInteger(0);
     /**
-     * 已经刷新磁盘的数据到了哪个位置
+     * 已经刷新磁盘的数据到了哪个位置，这个位置保证数据落盘
      */
     private final AtomicInteger flushedPosition = new AtomicInteger(0);
     /**
@@ -104,6 +104,9 @@ public class MappedFile extends ReferenceResource {
      */
     protected FileChannel fileChannel;
     private File file;
+    /**
+     * 这个缓冲区对象的position、limit、mark指针永远不会变，对缓冲区的修改或者读取，会slip一个映射部分缓冲区内容的子对象来进行操作。
+     */
     private MappedByteBuffer mappedByteBuffer;
     /**
      * Message will put to here first, and then reput to FileChannel if writeBuffer is not null.
@@ -112,6 +115,7 @@ public class MappedFile extends ReferenceResource {
     /**
      * 这个吊东西嘞，相当于是一个缓冲区池子，初始化的时候mappedFile对象会从其中"借"一个缓冲区
      * 等到释放mappedFile的时候又会把缓冲区还回去
+     * 这个是管理所有申请的 堆外(直接)内存，项目启动初期就会申请好
      */
     protected TransientStorePool transientStorePool = null;
     private String fileName;
@@ -151,6 +155,7 @@ public class MappedFile extends ReferenceResource {
     public static void clean(final ByteBuffer buffer) {
         if (buffer == null || !buffer.isDirect() || buffer.capacity() == 0)
             return;
+        // 从buffer中找到最底层的buffer，然后调用它的 cleaner 方法，获取一个清理器，再调用清理器的 clean 方法
         invoke(invoke(viewed(buffer), "cleaner"), "clean");
     }
 
@@ -182,6 +187,7 @@ public class MappedFile extends ReferenceResource {
      * 跟这个attachment有很大关系
      */
     private static ByteBuffer viewed(ByteBuffer buffer) {
+        // 默认是调用 viewedBuffer 如果有 attachment 就调这个，一直调到 方法返回null为止
         String methodName = "viewedBuffer";
         Method[] methods = buffer.getClass().getMethods();
         for (int i = 0; i < methods.length; i++) {
@@ -271,7 +277,8 @@ public class MappedFile extends ReferenceResource {
     }
 
     /**
-     * 这个就是一个很关键的写方法啦
+     * 这个就是一个很关键的写方法啦，不过这个方法只是决定用什么缓冲区写，然后将这个可以用来写消息的缓冲区暴露给cb，由调用方自己决定如何往缓冲区写消息，
+     * 📢：为什么这么设计呢？我觉得是考虑到 mappedFile 想把“写消息”中 消息内容的处理 这一块抽象出来(比如你是单条还是多条都不管)，而不是写死在mappedFile
      */
     public AppendMessageResult appendMessagesInner(final MessageExt messageExt, final AppendMessageCallback cb) {
         assert messageExt != null;
@@ -280,20 +287,22 @@ public class MappedFile extends ReferenceResource {
         int currentPos = this.wrotePosition.get();
 
         if (currentPos < this.fileSize) {
-            // 有缓存 就先写缓存
+            // 有直接内存缓存 就使用写缓存，否则就直接使用mmap映射内存
             ByteBuffer byteBuffer = writeBuffer != null ? writeBuffer.slice() : this.mappedByteBuffer.slice();
             // 这个slice其实相当于是克隆...因为特么这个原始的buffer的各个变量永远不会被修改 所以capacity不会变,position每次都是slice()后为0，然后又设置成这个currentPos
             byteBuffer.position(currentPos);
             AppendMessageResult result;
             if (messageExt instanceof MessageExtBrokerInner) {
-                // maxBlank就是这个文件剩余的空白空间
+                // maxBlank就是这个文件剩余的空白可写空间
                 result = cb.doAppend(this.getFileFromOffset(), byteBuffer, this.fileSize - currentPos, (MessageExtBrokerInner) messageExt);
             } else if (messageExt instanceof MessageExtBatch) {
                 result = cb.doAppend(this.getFileFromOffset(), byteBuffer, this.fileSize - currentPos, (MessageExtBatch) messageExt);
             } else {
                 return new AppendMessageResult(AppendMessageStatus.UNKNOWN_ERROR);
             }
+            // 更新当前下一个可写的位置
             this.wrotePosition.addAndGet(result.getWroteBytes());
+            // 当前存储的最新的消息的存入时间
             this.storeTimestamp = result.getStoreTimestamp();
             return result;
         }
@@ -305,6 +314,9 @@ public class MappedFile extends ReferenceResource {
         return this.fileFromOffset;
     }
 
+    /**
+     * 不是写mmap，是通过fileChannel写数据
+     */
     public boolean appendMessage(final byte[] data) {
         int currentPos = this.wrotePosition.get();
 
@@ -346,12 +358,13 @@ public class MappedFile extends ReferenceResource {
     }
 
     /**
+     * 📢：flush操作，不管你是基于 缓存区 + fileChannel 的写，还是直接使用mmap的写，都是在这里统一落盘。
+     *     commit方法，只是针对缓存写，将缓存刷到fileChannel去
      * @return The current flushed position
      */
     public int flush(final int flushLeastPages) {
         if (this.isAbleToFlush(flushLeastPages)) {
-            // 不理解 为什么要hold? 狗日的 注释也不写
-            // 加锁?
+            // hold是为了防止文件被关闭，如果文件被关闭了，hold就会失败
             if (this.hold()) {
                 int value = getReadPosition();
 
@@ -380,9 +393,15 @@ public class MappedFile extends ReferenceResource {
     }
 
     /**
+     * 专门用户将数据写入fileChannel用的
+     *
      * 该方法 != 落盘
      * 提交数据 对于writeBuffer + fileChannel 方式是将缓冲区数据提交给文件通道
-     * 对于我们的mmap机制来说，则什么都不做
+     *
+     * 对于我们的mmap机制来说，则什么都不做，并且返回当且已经写到了哪个位置
+     *
+     * @param commitLeastPages 攒够多少页提交
+     * @return 已经提交的位置 or 已经写了的位置(如果未开启缓存写)
      */
     public int commit(final int commitLeastPages) {
         if (writeBuffer == null) {
@@ -399,6 +418,7 @@ public class MappedFile extends ReferenceResource {
         }
 
         // All dirty data has been committed to FileChannel.
+        // 如果我们已经把当前文件的所有数据都给落盘了，就把写缓冲区还回去
         if (writeBuffer != null && this.transientStorePool != null && this.fileSize == this.committedPosition.get()) {
             this.transientStorePool.returnBuffer(writeBuffer);
             this.writeBuffer = null;
@@ -409,13 +429,14 @@ public class MappedFile extends ReferenceResource {
 
     /**
      * 这个主要是用来刷新writeBuffer缓冲区的 不过还只是把缓冲区写到fileChannel 其实并没完全保证fileChannel数据一定落盘
-     * 落盘还是要flush
+     * 落盘还是要fileChannel.force()
      */
     protected void commit0(final int commitLeastPages) {
         int writePos = this.wrotePosition.get();
         int lastCommittedPosition = this.committedPosition.get();
 
-        if (writePos - lastCommittedPosition > commitLeastPages) {
+        // 这段代码有问题吧？？？你他妈 两个位置 相减 肯定大于 这个页啊
+        if ((writePos - lastCommittedPosition)/OS_PAGE_SIZE > commitLeastPages) {
             try {
                 ByteBuffer byteBuffer = writeBuffer.slice();
                 byteBuffer.position(lastCommittedPosition);
@@ -449,6 +470,10 @@ public class MappedFile extends ReferenceResource {
         return write > flush;
     }
 
+    /**
+     * @param commitLeastPages 至少要到了多少页才提交
+     * @return
+     */
     protected boolean isAbleToCommit(final int commitLeastPages) {
         int flush = this.committedPosition.get();
         int write = this.wrotePosition.get();
@@ -482,7 +507,9 @@ public class MappedFile extends ReferenceResource {
             if (this.hold()) {
                 ByteBuffer byteBuffer = this.mappedByteBuffer.slice();
                 byteBuffer.position(pos);
+                // 这个buffer的 可处理范围是 byteBuffer 的 pos - limit 之间的数据
                 ByteBuffer byteBufferNew = byteBuffer.slice();
+                // 把 limit 又设置成 具体的size，就只会读到这部分的数据，相当于 pos - pos + size(不包含)
                 byteBufferNew.limit(size);
                 return new SelectMappedBufferResult(this.fileFromOffset + pos, byteBufferNew, size, this);
             } else {
@@ -497,16 +524,22 @@ public class MappedFile extends ReferenceResource {
         return null;
     }
 
+    /**
+     * 可读范围是 pos(包括) - readPos(不包括) 之间，这个方法返回的数据，不一定已经落盘了，所以会存在系统崩溃，该消息被丢失的风险。
+     */
     public SelectMappedBufferResult selectMappedBuffer(int pos) {
         int readPosition = getReadPosition();
         if (pos < readPosition && pos >= 0) {
             if (this.hold()) {
                 ByteBuffer byteBuffer = this.mappedByteBuffer.slice();
                 byteBuffer.position(pos);
+                // rp = 3 pos = 0 size = 3 - 0 = 3，不包括rp
                 int size = readPosition - pos;
-                ByteBuffer byteBufferNew = byteBuffer.slice();
-                byteBufferNew.limit(size);
-                return new SelectMappedBufferResult(this.fileFromOffset + pos, byteBufferNew, size, this);
+                // 我感觉没必要创建个新的buffer对象 by vate
+                 ByteBuffer byteBufferNew = byteBuffer.slice();
+                // byteBufferNew.limit(size);
+                byteBuffer.limit(size);
+                return new SelectMappedBufferResult(this.fileFromOffset + pos, byteBuffer, size, this);
             }
         }
 
@@ -534,6 +567,9 @@ public class MappedFile extends ReferenceResource {
         return true;
     }
 
+    /**
+     * 尝试清除map的buffer，然后删除文件
+     */
     public boolean destroy(final long intervalForcibly) {
         this.shutdown(intervalForcibly);
 
@@ -573,6 +609,9 @@ public class MappedFile extends ReferenceResource {
      * @return The max position which have valid data
      */
     public int getReadPosition() {
+        // 用了写缓存，就使用已提交的位置，就是已提交给fileChannel
+        // 没用写缓存，就使用已写的位置
+        // 这两个位置 都不是完全的 已刷盘，就是说，这部分数据不会脏，但是可能会丢失，比如突然断电
         return this.writeBuffer == null ? this.wrotePosition.get() : this.committedPosition.get();
     }
 
@@ -583,8 +622,11 @@ public class MappedFile extends ReferenceResource {
     /**
      * 预热一下？
      * 思路：
-     * 把整个mappedByteBuffer每个字节put一下...最终效果就是整个文件都被映射到了物理内存...
+     * 把整个mappedByteBuffer部分页的每个字节put一下0...
+     * 最终效果就是整个文件都被映射到了物理内存...
      * 这里有一个地方很有意思，就是循环条件，不是循环 fileSize,而是 fileSize / OS_PAGE_SIZE 因为置换都是按页来置换的...
+     *
+     * 这个方法一旦调用...这个文件就会保持在内存里边，所以我估计rmq应该只维持一个当前写入要用的就可以了
      */
     public void warmMappedFile(FlushDiskType type, int pages) {
         long beginTime = System.currentTimeMillis();
@@ -623,7 +665,8 @@ public class MappedFile extends ReferenceResource {
         log.info("mapped file warm-up done. mappedFile={}, costTime={}", this.getFileName(),
                 System.currentTimeMillis() - beginTime);
 
-        this.mlock();
+        // todo vate:  2023-01-10 18:26:30
+//        this.mlock();
     }
 
     public String getFileName() {
@@ -634,6 +677,13 @@ public class MappedFile extends ReferenceResource {
         return mappedByteBuffer;
     }
 
+    /**
+     * 如果 buffer的limit = cap，position = 0，那这个新的buffer，就几乎跟原buffer一样，都是从0开始读写
+     * 如果 buffer的limit = cap，position > 0，那这个新buffer，就是只能从position开始读写，然后能访问到的内容也是 limit - position的范围
+     *
+     * 但是我看了下，其实大部分他的使用场景，使用duplicate也是可以的...不知道他们为什么用这个方法，这个方法的命名其实还是比较能说明问题的，
+     * 分片，就是从原buffer中，把position - limit 分片出来，只有这块区域可以读写。
+     */
     public ByteBuffer sliceByteBuffer() {
         return this.mappedByteBuffer.slice();
     }
@@ -651,7 +701,7 @@ public class MappedFile extends ReferenceResource {
     }
 
     /**
-     * 内存锁?
+     * 将内存“锁住”，防止被置换回磁盘
      */
     public void mlock() {
         final long beginTime = System.currentTimeMillis();
@@ -685,4 +735,33 @@ public class MappedFile extends ReferenceResource {
     public String toString() {
         return this.fileName;
     }
+
+    public static void main(String[] args) throws IOException, InterruptedException {
+        System.out.println("start");
+        // mmap机制，由操作系统自己寻找一块连续空闲的虚拟内存区域去映射文件
+//        this.mappedByteBuffer = this.fileChannel.map(MapMode.READ_WRITE, 0, fileSize);
+//        MappedFile mappedFile = new MappedFile("0", 1024 * 1024 * 1024);
+//        mappedFile.warmMappedFile(FlushDiskType.SYNC_FLUSH, 1024);
+//        System.out.println("end");
+
+//        File testLock = new File("testLock");
+//        new RandomAccessFile(testLock,"rw").getChannel().lock();
+//        System.out.println("拿到锁了！");
+//        Thread.sleep(10000000);
+
+        ByteBuffer allocate = ByteBuffer.allocate(5);
+        allocate.limit(0);
+        allocate.put((byte) 1);
+//        allocate.put((byte) 1);
+        //        allocate.put((byte) 1);
+//        allocate.put((byte) 1);
+//        allocate.put((byte) 1);
+//
+////        allocate.flip();
+//        allocate.position(0);
+//        allocate.get();
+//        allocate.get();
+
+    }
+
 }

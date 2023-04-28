@@ -60,6 +60,7 @@ public class RebalancePushImpl extends RebalanceImpl {
 
         int currentQueueCount = this.processQueueTable.size();
         if (currentQueueCount != 0) {
+            // 更新流控信息，队列消息数阈值和队列消息存储量阈值
             int pullThresholdForTopic = this.defaultMQPushConsumerImpl.getDefaultMQPushConsumer().getPullThresholdForTopic();
             if (pullThresholdForTopic != -1) {
                 int newVal = Math.max(1, pullThresholdForTopic / currentQueueCount);
@@ -78,6 +79,7 @@ public class RebalancePushImpl extends RebalanceImpl {
         }
 
         // notify broker
+        // 把最新的订阅情况 同步给bk
         this.getmQClientFactory().sendHeartbeatToAllBrokerWithLock();
     }
 
@@ -85,9 +87,11 @@ public class RebalancePushImpl extends RebalanceImpl {
     public boolean removeUnnecessaryMessageQueue(MessageQueue mq, ProcessQueue pq) {
         this.defaultMQPushConsumerImpl.getOffsetStore().persist(mq);
         this.defaultMQPushConsumerImpl.getOffsetStore().removeOffset(mq);
+        // 只有集群模式下 顺序消费 才需要加锁
         if (this.defaultMQPushConsumerImpl.isConsumeOrderly()
             && MessageModel.CLUSTERING.equals(this.defaultMQPushConsumerImpl.messageModel())) {
             try {
+                // 如果pq的消息正在被处理（顺序消费，消费前先加锁），这里就会被阻塞
                 if (pq.getConsumeLock().tryLock(1000, TimeUnit.MILLISECONDS)) {
                     try {
                         return this.unlockDelay(mq, pq);
@@ -151,6 +155,7 @@ public class RebalancePushImpl extends RebalanceImpl {
 
     @Override
     public long computePullFromWhereWithException(MessageQueue mq) throws MQClientException {
+        // 从offetStore获取mq位点
         long result = -1;
         final ConsumeFromWhere consumeFromWhere = this.defaultMQPushConsumerImpl.getDefaultMQPushConsumer().getConsumeFromWhere();
         final OffsetStore offsetStore = this.defaultMQPushConsumerImpl.getOffsetStore();
@@ -181,6 +186,7 @@ public class RebalancePushImpl extends RebalanceImpl {
                 break;
             }
             case CONSUME_FROM_FIRST_OFFSET: {
+                // 远端有就用远端的，远端没有，就从0开始
                 long lastOffset = offsetStore.readOffset(mq, ReadOffsetType.READ_FROM_STORE);
                 if (lastOffset >= 0) {
                     result = lastOffset;

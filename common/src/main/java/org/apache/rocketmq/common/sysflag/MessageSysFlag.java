@@ -19,9 +19,21 @@ package org.apache.rocketmq.common.sysflag;
 public class MessageSysFlag {
     public final static int COMPRESSED_FLAG = 0x1;
     public final static int MULTI_TAGS_FLAG = 0x1 << 1;
+    /**
+     * 不是事务
+     */
     public final static int TRANSACTION_NOT_TYPE = 0;
+    /**
+     * 0100 事务预处理
+     */
     public final static int TRANSACTION_PREPARED_TYPE = 0x1 << 2;
+    /**
+     * 1000  事务提交
+     */
     public final static int TRANSACTION_COMMIT_TYPE = 0x2 << 2;
+    /**
+     * 1100 事务回滚 同时也作为 mask
+     */
     public final static int TRANSACTION_ROLLBACK_TYPE = 0x3 << 2;
     public final static int BORNHOST_V6_FLAG = 0x1 << 4;
     public final static int STOREHOSTADDRESS_V6_FLAG = 0x1 << 5;
@@ -38,4 +50,7 @@ public class MessageSysFlag {
         return flag & (~COMPRESSED_FLAG);
     }
 
+    public static void main(String[] args) {
+        System.out.println(Integer.toBinaryString(TRANSACTION_ROLLBACK_TYPE));
+    }
 }

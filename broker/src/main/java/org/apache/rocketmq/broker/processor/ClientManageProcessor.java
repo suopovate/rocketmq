@@ -57,6 +57,7 @@ public class ClientManageProcessor extends AsyncNettyRequestProcessor implements
         switch (request.getCode()) {
             case RequestCode.HEART_BEAT:
                 return this.heartBeat(ctx, request);
+                // 客户端关闭消费者对象(MQConsumerInner)的时候会调用
             case RequestCode.UNREGISTER_CLIENT:
                 return this.unregisterClient(ctx, request);
             case RequestCode.CHECK_CLIENT_CONFIG:
@@ -72,6 +73,9 @@ public class ClientManageProcessor extends AsyncNettyRequestProcessor implements
         return false;
     }
 
+    /**
+     * 每一个消费端实例(注意是消费实例，不是消费者，一个实例可以有很多个消费者和生产者)
+     */
     public RemotingCommand heartBeat(ChannelHandlerContext ctx, RemotingCommand request) {
         RemotingCommand response = RemotingCommand.createResponseCommand(null);
         HeartbeatData heartbeatData = HeartbeatData.decode(request.getBody(), HeartbeatData.class);
@@ -82,17 +86,21 @@ public class ClientManageProcessor extends AsyncNettyRequestProcessor implements
             request.getVersion()
         );
 
+        // 针对这个消费者实例下的每个消费者组进行数据记录
         for (ConsumerData data : heartbeatData.getConsumerDataSet()) {
+            // 首先看是不是在本bk中已经保存过了
             SubscriptionGroupConfig subscriptionGroupConfig =
                 this.brokerController.getSubscriptionGroupManager().findSubscriptionGroupConfig(
                     data.getGroupName());
             boolean isNotifyConsumerIdsChangedEnable = true;
             if (null != subscriptionGroupConfig) {
+                // 已经在bk中登记过
                 isNotifyConsumerIdsChangedEnable = subscriptionGroupConfig.isNotifyConsumerIdsChangedEnable();
                 int topicSysFlag = 0;
                 if (data.isUnitMode()) {
                     topicSysFlag = TopicSysFlag.buildSysFlag(false, true);
                 }
+                // 为这个消费者组 - 这个topic，创建异常消息重试topic，如果是新建，就将Bk当前所有信息同步到ns
                 String newTopic = MixAll.getRetryTopic(data.getGroupName());
                 this.brokerController.getTopicConfigManager().createTopicInSendMessageBackMethod(
                     newTopic,
@@ -100,6 +108,8 @@ public class ClientManageProcessor extends AsyncNettyRequestProcessor implements
                     PermName.PERM_WRITE | PermName.PERM_READ, topicSysFlag);
             }
 
+            // 新增或者更新，主要针对当前消费者是新加入的连接，或者 当前订阅的topic信息有变化。
+            // 📢：如果有订阅的情况变更，就会通知所有在线的客户端。
             boolean changed = this.brokerController.getConsumerManager().registerConsumer(
                 data.getGroupName(),
                 clientChannelInfo,
@@ -117,7 +127,7 @@ public class ClientManageProcessor extends AsyncNettyRequestProcessor implements
                 );
             }
         }
-
+        // 生产者的信息处理，比较简单，只是记录下生产者组，和连接
         for (ProducerData data : heartbeatData.getProducerDataSet()) {
             this.brokerController.getProducerManager().registerProducer(data.getGroupName(),
                 clientChannelInfo);
@@ -165,6 +175,9 @@ public class ClientManageProcessor extends AsyncNettyRequestProcessor implements
         return response;
     }
 
+    /**
+     * 检查用户的消息订阅配置是否合法，主要就是检查下如果非tag过滤，的情况下，过滤语法是否合法
+     */
     public RemotingCommand checkClientConfig(ChannelHandlerContext ctx, RemotingCommand request)
         throws RemotingCommandException {
         final RemotingCommand response = RemotingCommand.createResponseCommand(null);
@@ -175,12 +188,14 @@ public class ClientManageProcessor extends AsyncNettyRequestProcessor implements
         if (requestBody != null && requestBody.getSubscriptionData() != null) {
             SubscriptionData subscriptionData = requestBody.getSubscriptionData();
 
+            // 标签过滤是客户端自己过滤
             if (ExpressionType.isTagType(subscriptionData.getExpressionType())) {
                 response.setCode(ResponseCode.SUCCESS);
                 response.setRemark(null);
                 return response;
             }
 
+            // 消息属性过滤是bk做
             if (!this.brokerController.getBrokerConfig().isEnablePropertyFilter()) {
                 response.setCode(ResponseCode.SYSTEM_ERROR);
                 response.setRemark("The broker does not support consumer to filter message by " + subscriptionData.getExpressionType());
@@ -188,6 +203,7 @@ public class ClientManageProcessor extends AsyncNettyRequestProcessor implements
             }
 
             try {
+                // bk存在对应的过滤实现，并且对应的查询语法也是正确的
                 FilterFactory.INSTANCE.get(subscriptionData.getExpressionType()).compile(subscriptionData.getSubString());
             } catch (Exception e) {
                 log.warn("Client {}@{} filter message, but failed to compile expression! sub={}, error={}",

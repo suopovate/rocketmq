@@ -34,6 +34,7 @@ import org.apache.rocketmq.store.DispatchRequest;
 import org.apache.rocketmq.store.config.StorePathConfigHelper;
 
 public class IndexService {
+
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     /**
      * Maximum times to attempt index file creation.
@@ -328,6 +329,7 @@ public class IndexService {
             }
 
             if (indexFile != null) {
+                // 创建下一个文件时，启动对上一个文件的刷盘线程
                 final IndexFile flushThisFile = prevIndexFile;
                 Thread flushThread = new Thread(new Runnable() {
                     @Override

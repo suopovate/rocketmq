@@ -67,11 +67,18 @@ public class PullAPIWrapper {
         this.unitMode = unitMode;
     }
 
+    /**
+     * 1. 设置下次消息拉取时，bk节点的地址，为本次请求成功获取到的bk地址
+     * 2. 基于消息的tags和用户订阅提供的标签列表，过滤消息，只支持精确匹配，不支持模糊
+     * 3. 事务相关，待研究
+     */
     public PullResult processPullResult(final MessageQueue mq, final PullResult pullResult,
         final SubscriptionData subscriptionData) {
         PullResultExt pullResultExt = (PullResultExt) pullResult;
 
+        // 从某个节点获取到消息后，下次就固定从这个节点获取
         this.updatePullFromWhichNode(mq, pullResultExt.getSuggestWhichBrokerId());
+        // 消息的筛选逻辑，就在这里
         if (PullStatus.FOUND == pullResult.getPullStatus()) {
             ByteBuffer byteBuffer = ByteBuffer.wrap(pullResultExt.getMessageBinary());
             List<MessageExt> msgList = MessageDecoder.decodes(byteBuffer);
@@ -88,6 +95,7 @@ public class PullAPIWrapper {
                 }
             }
 
+            // 用户自定义的客户端消息过滤器
             if (this.hasHook()) {
                 FilterMessageContext filterMessageContext = new FilterMessageContext();
                 filterMessageContext.setUnitMode(unitMode);
@@ -154,9 +162,11 @@ public class PullAPIWrapper {
         final CommunicationMode communicationMode,
         final PullCallback pullCallback
     ) throws MQClientException, RemotingException, MQBrokerException, InterruptedException {
+        // 找到能用的bk
         FindBrokerResult findBrokerResult =
             this.mQClientFactory.findBrokerAddressInSubscribe(mq.getBrokerName(),
                 this.recalculatePullFromWhichNode(mq), false);
+        // 找不到？就立马更新一下本地路由信息
         if (null == findBrokerResult) {
             this.mQClientFactory.updateTopicRouteInfoFromNameServer(mq.getTopic());
             findBrokerResult =
@@ -175,6 +185,7 @@ public class PullAPIWrapper {
             }
             int sysFlagInner = sysFlag;
 
+            // 如果是从节点，就不提交位点？
             if (findBrokerResult.isSlave()) {
                 sysFlagInner = PullSysFlag.clearCommitOffsetFlag(sysFlagInner);
             }
@@ -193,6 +204,7 @@ public class PullAPIWrapper {
             requestHeader.setExpressionType(expressionType);
 
             String brokerAddr = findBrokerResult.getBrokerAddr();
+            // 如果，需要bk端支持classFilter，则得支持类过滤服务的Bk
             if (PullSysFlag.hasClassFilterFlag(sysFlagInner)) {
                 brokerAddr = computePullFromWhichFilterServer(mq.getTopic(), brokerAddr);
             }
@@ -210,6 +222,9 @@ public class PullAPIWrapper {
         throw new MQClientException("The broker[" + mq.getBrokerName() + "] not exist", null);
     }
 
+    /**
+     * 获取拉mq的bk
+     */
     public long recalculatePullFromWhichNode(final MessageQueue mq) {
         if (this.isConnectBrokerByUser()) {
             return this.defaultBrokerId;
@@ -230,6 +245,7 @@ public class PullAPIWrapper {
             TopicRouteData topicRouteData = topicRouteTable.get(topic);
             List<String> list = topicRouteData.getFilterServerTable().get(brokerAddr);
 
+            // 随机选一个过滤服务??
             if (list != null && !list.isEmpty()) {
                 return list.get(randomNum() % list.size());
             }

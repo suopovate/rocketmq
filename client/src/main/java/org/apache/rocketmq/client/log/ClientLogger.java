@@ -17,7 +17,7 @@
 package org.apache.rocketmq.client.log;
 
 import org.apache.rocketmq.common.constant.LoggerName;
-import org.apache.rocketmq.logging.InnerLoggerFactory;
+import org.apache.rocketmq.logging.DefaultInternalLoggerFactory;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 import org.apache.rocketmq.logging.inner.Appender;
@@ -47,9 +47,10 @@ public class ClientLogger {
     //private static Appender rocketmqClientAppender = null;
 
     static {
-        CLIENT_USE_SLF4J = Boolean.parseBoolean(System.getProperty(CLIENT_LOG_USESLF4J, "false"));
+        // by vate，默认使用slf4j
+        CLIENT_USE_SLF4J = Boolean.parseBoolean(System.getProperty(CLIENT_LOG_USESLF4J, "true"));
         if (!CLIENT_USE_SLF4J) {
-            InternalLoggerFactory.setCurrentLoggerType(InnerLoggerFactory.LOGGER_INNER);
+            InternalLoggerFactory.setCurrentLoggerType(DefaultInternalLoggerFactory.LOGGER_INNER);
             CLIENT_LOGGER = createLogger(LoggerName.CLIENT_LOGGER_NAME);
             createLogger(LoggerName.COMMON_LOGGER_NAME);
             createLogger(RemotingHelper.ROCKETMQ_REMOTING);
@@ -84,8 +85,8 @@ public class ClientLogger {
         String clientLogLevel = System.getProperty(CLIENT_LOG_LEVEL, "INFO");
         boolean additive = "true".equalsIgnoreCase(System.getProperty(CLIENT_LOG_ADDITIVE));
         InternalLogger logger = InternalLoggerFactory.getLogger(loggerName);
-        InnerLoggerFactory.InnerLogger innerLogger = (InnerLoggerFactory.InnerLogger) logger;
-        Logger realLogger = innerLogger.getLogger();
+        DefaultInternalLoggerFactory.DefaultInternalLogger defaultInternalLogger = (DefaultInternalLoggerFactory.DefaultInternalLogger) logger;
+        Logger realLogger = defaultInternalLogger.getLogger();
 
         //if (rocketmqClientAppender == null) {
         //   createClientAppender();

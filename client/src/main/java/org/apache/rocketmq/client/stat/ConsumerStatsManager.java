@@ -66,14 +66,17 @@ public class ConsumerStatsManager {
     }
 
     public void incPullTPS(final String group, final String topic, final long msgs) {
+        // 增加每秒的事务处理量 pull 数据
         this.topicAndGroupPullTPS.addValue(topic + "@" + group, (int) msgs, 1);
     }
 
     public void incConsumeRT(final String group, final String topic, final long rt) {
+        // 每秒的消费RT，即每个消息的消费耗用时长
         this.topicAndGroupConsumeRT.addRTValue(topic + "@" + group, (int) rt, 1);
     }
 
     public void incConsumeOKTPS(final String group, final String topic, final long msgs) {
+        // 每秒消费成功的数量
         this.topicAndGroupConsumeOKTPS.addValue(topic + "@" + group, (int) msgs, 1);
     }
 

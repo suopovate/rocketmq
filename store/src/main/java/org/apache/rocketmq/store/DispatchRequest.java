@@ -25,6 +25,9 @@ public class DispatchRequest {
     private int msgSize;
     private final long tagsCode;
     private final long storeTimestamp;
+    /**
+     * 在cmq中的偏移量，这个偏移量是指，以cq的消息条目为基本单位，不是以字节为单位
+     */
     private final long consumeQueueOffset;
     private final String keys;
     private final boolean success;

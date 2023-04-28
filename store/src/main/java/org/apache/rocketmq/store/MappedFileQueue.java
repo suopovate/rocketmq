@@ -31,8 +31,12 @@ import org.apache.rocketmq.common.constant.LoggerName;
 import org.apache.rocketmq.logging.InternalLogger;
 import org.apache.rocketmq.logging.InternalLoggerFactory;
 
+import javax.swing.plaf.synth.SynthOptionPaneUI;
+
 /**
- * 把多个mappedFile串起来....
+ * 这个类 负责管理某个类别的所有mappedFile
+ * 1. 根据时间戳、offset查找file
+ * 2. 复制
  */
 public class MappedFileQueue {
     private static final InternalLogger log = InternalLoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
@@ -46,7 +50,7 @@ public class MappedFileQueue {
     private final String storePath;
 
     /**
-     * 多少个mappedFile
+     * 文件的最大大小
      */
     private final int mappedFileSize;
 
@@ -91,7 +95,7 @@ public class MappedFileQueue {
     }
 
     /**
-     * 根据时间戳去查找对应的文件
+     * 根据时间戳去查找对应的文件，基于修改时间，找一个大于该时间的最老的文件
      */
     public MappedFile getMappedFileByTime(final long timestamp) {
         Object[] mfs = this.copyMappedFiles(0);
@@ -121,7 +125,7 @@ public class MappedFileQueue {
     }
 
     /**
-     * 其实就是清除offset后面的所有文件
+     * 其实就是清除offset后面的所有文件(f2-f6)
      *     f
      * | f1 | f2 | f3 | f4 | f5 | f6 |
      */
@@ -130,16 +134,19 @@ public class MappedFileQueue {
 
         for (MappedFile file : this.mappedFiles) {
             long fileTailOffset = file.getFileFromOffset() + this.mappedFileSize;
-            // 如果这个文件的最大迁移量 > 参数位点
+            // 如果这个文件的最大偏移量 > 参数位点
+            // fileTailOffset本身不在当前这个文件，是下一个文件的第一个字节，所以是 > 不是 >=
             if (fileTailOffset > offset) {
                 // 如果这个参数位点也刚好在这个文件内
-                // 那么就重置这个文件，清除掉offset后的数据
+                // 那么就重置这个文件，将文件的可写信息设置为offset
+                // 这个 >= 是有讲究的，fromOffset 是文件第一个字节的位置
+                // fileFromOffset <= offset < fromOffset + fileSize
                 if (offset >= file.getFileFromOffset()) {
                     file.setWrotePosition((int) (offset % this.mappedFileSize));
                     file.setCommittedPosition((int) (offset % this.mappedFileSize));
                     file.setFlushedPosition((int) (offset % this.mappedFileSize));
                 } else {
-                    // 否则就直接删掉这个文件
+                    // 否则就直接删掉这些超出offset太多的文件，这里是启动之前，应该是不会出现被别的地方引用的情况，所以应该删一次就能删除完成
                     file.destroy(1000);
                     willRemoveFiles.add(file);
                 }
@@ -173,15 +180,21 @@ public class MappedFileQueue {
         }
     }
 
+    /**
+     * 加载mf列表，加载完的mf，其write、flush、commit位置都默认设置在结尾，需要进行调整的。
+     */
     public boolean load() {
         File dir = new File(this.storePath);
         File[] files = dir.listFiles();
         if (files != null) {
-            // 升序排序 很有意思 问题是按什么的升序
+            // 升序排序 因为文件名都是数值，且都是各个文件的Offset开始值
             // ascending order
             Arrays.sort(files);
             for (File file : files) {
-
+                // 如果文件占用的大小不等于mappedFileSize 就报错
+                // 为什么会这样检查呢？因为mappedFile对应的文件在第一次创建时 一般会设置大小 并预热 预热的时候 会直接把文件内容全初始化写入为 0
+                // 如果文件占用大小不对，就说明数据出问题了
+                // 我们启动时配置的 这个 mappedFileSize 不能变，必须与文件的大小保持一致！
                 if (file.length() != this.mappedFileSize) {
                     log.warn(file + "\t" + file.length()
                         + " length not matched message store config value, please check it manually");
@@ -238,13 +251,17 @@ public class MappedFileQueue {
             createOffset = mappedFileLast.getFileFromOffset() + this.mappedFileSize;
         }
 
-        // 看来需要创建一个新文件了
+        // 看来需要创建一个新文件了，文件名是 当前文件的首个内容的初始位点
+        // 比如 mfSize= 10，首个文件名是 0 (内容:0-9) 第二个文件名是10 (内容:10-19)
         if (createOffset != -1 && needCreate) {
             String nextFilePath = this.storePath + File.separator + UtilAll.offset2FileName(createOffset);
             String nextNextFilePath = this.storePath + File.separator
                 + UtilAll.offset2FileName(createOffset + this.mappedFileSize);
             MappedFile mappedFile = null;
 
+            // 如果有提供mf分配服务的，就一次性分配两个，否则只创建一个
+            // 所以很多时候，可能第一次会创建两个创建请求，然后下一次进来的时候，会发现当前需要的文件已经创建好了，直接返回，然后异步创建下一个
+            // 通过这种方式，提升了后续获取mappedFile的效率，将其异步化，因为创建这个还是比较耗时的
             if (this.allocateMappedFileService != null) {
                 mappedFile = this.allocateMappedFileService.putRequestAndReturnMappedFile(nextFilePath,
                     nextNextFilePath, this.mappedFileSize);
@@ -277,6 +294,7 @@ public class MappedFileQueue {
         MappedFile mappedFileLast = null;
 
         // 特么 搞一个while true???就为了避开这个索引越界？？什么奇怪的代码
+        // 应该是防止并发问题，比如并发删除了一个mf，那么你原来的size肯定就拿不到末尾的mf，会出发iob，那就忽略这个异常重新拿吧
         while (!this.mappedFiles.isEmpty()) {
             try {
                 mappedFileLast = this.mappedFiles.get(this.mappedFiles.size() - 1);
@@ -375,6 +393,7 @@ public class MappedFileQueue {
         final int deleteFilesInterval,
         final long intervalForcibly,
         final boolean cleanImmediately) {
+        // 获取当前所有的file
         Object[] mfs = this.copyMappedFiles(0);
 
         if (null == mfs)
@@ -387,6 +406,7 @@ public class MappedFileQueue {
             for (int i = 0; i < mfsLength; i++) {
                 MappedFile mappedFile = (MappedFile) mfs[i];
                 long liveMaxTimestamp = mappedFile.getLastModifiedTimestamp() + expiredTime;
+                // cleanImmediately 意味着删除所有文件
                 if (System.currentTimeMillis() >= liveMaxTimestamp || cleanImmediately) {
                     if (mappedFile.destroy(intervalForcibly)) {
                         files.add(mappedFile);
@@ -462,10 +482,13 @@ public class MappedFileQueue {
 
     public boolean flush(final int flushLeastPages) {
         boolean result = true;
+        // 找到当前已经刷新过的位置对应的文件
         MappedFile mappedFile = this.findMappedFileByOffset(this.flushedWhere, this.flushedWhere == 0);
         if (mappedFile != null) {
+            // 临时保存这个时间，因为这个时间一直都在变
             long tmpTimeStamp = mappedFile.getStoreTimestamp();
             int offset = mappedFile.flush(flushLeastPages);
+            // 全局刷新到了哪个位置
             long where = mappedFile.getFileFromOffset() + offset;
             result = where == this.flushedWhere;
             this.flushedWhere = where;
@@ -479,10 +502,14 @@ public class MappedFileQueue {
 
     public boolean commit(final int commitLeastPages) {
         boolean result = true;
+        // this.committedWhere == 0 就等于没有启用缓存写的方式，或者是第一次启动
         MappedFile mappedFile = this.findMappedFileByOffset(this.committedWhere, this.committedWhere == 0);
         if (mappedFile != null) {
+            // 可能是 已经提交的位置 也可能是最新的已写数据的位置(可能未提交或未刷新)
             int offset = mappedFile.commit(commitLeastPages);
+            // 算出全局位置
             long where = mappedFile.getFileFromOffset() + offset;
+            // 好奇怪啊 这里不应该是 where 会 大于 committedWhere吗？
             result = where == this.committedWhere;
             this.committedWhere = where;
         }
@@ -502,6 +529,7 @@ public class MappedFileQueue {
             MappedFile firstMappedFile = this.getFirstMappedFile();
             MappedFile lastMappedFile = this.getLastMappedFile();
             if (firstMappedFile != null && lastMappedFile != null) {
+                // 边界问题处理，清除掉以删除的offset范围，和还未写的offset范围
                 if (offset < firstMappedFile.getFileFromOffset() || offset >= lastMappedFile.getFileFromOffset() + this.mappedFileSize) {
                     LOG_ERROR.warn("Offset not matched. Request offset: {}, firstOffset: {}, lastOffset: {}, mappedFileSize: {}, mappedFiles count: {}",
                         offset,
@@ -510,6 +538,9 @@ public class MappedFileQueue {
                         this.mappedFileSize,
                         this.mappedFiles.size());
                 } else {
+                    // (offset / this.mappedFileSize) = 得到 从 0开始 到 这个offset，文件的index
+                    // firstMappedFile.getFileFromOffset() / this.mappedFileSize = 第一个文件的offset,从 0开始 到 这个offset，文件的index
+                    // 0 1 2 3 4 5 ：假如第一个是 5 第二个 是2 ，5 - 2 = 3，mf队列以2作为第一个元素，5是最后一个元素，arr[3]就是5这个元素了。
                     int index = (int) ((offset / this.mappedFileSize) - (firstMappedFile.getFileFromOffset() / this.mappedFileSize));
                     MappedFile targetFile = null;
                     try {
@@ -517,11 +548,16 @@ public class MappedFileQueue {
                     } catch (Exception ignored) {
                     }
 
+                    // 又是边界问题，再次检查
+                    // 这句有点多余 ： offset < targetFile.getFileFromOffset() + this.mappedFileSize
+                    // 因为已经检查过 offset 必须是 在 first 和 last文件的中间了，所以不可能还能 > targetFile.getFileFromOffset() + this.mappedFileSize
                     if (targetFile != null && offset >= targetFile.getFileFromOffset()
                         && offset < targetFile.getFileFromOffset() + this.mappedFileSize) {
                         return targetFile;
                     }
 
+                    // 通过index找不到的情况，又兜底在这里循环一遍...好奇怪啊，啥情况会走到这里来？
+                    // 头脑风暴了一下，感觉基本不会走到这里来
                     for (MappedFile tmpMappedFile : this.mappedFiles) {
                         if (offset >= tmpMappedFile.getFileFromOffset()
                             && offset < tmpMappedFile.getFileFromOffset() + this.mappedFileSize) {
@@ -647,9 +683,9 @@ public class MappedFileQueue {
     }
 
 
-    public static void main(String[] args) {
-        File[] files = {new File("12345"), new File("12345678"),new File("212345678")};
-        Arrays.sort(files);
-        System.out.println(files);
+    public static void main(String[] args) throws IOException {
+        MappedFileQueue mappedFileQueue = new MappedFileQueue("/Users/vate/softcache/rocketmq/store/commitlog.vate", 1024 * 1024 * 1024, null);
+        mappedFileQueue.load();
+        mappedFileQueue.getCommittedWhere();
     }
 }
