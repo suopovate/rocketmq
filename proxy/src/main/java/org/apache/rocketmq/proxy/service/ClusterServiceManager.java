@@ -43,6 +43,7 @@ import org.apache.rocketmq.proxy.service.client.ProxyClientRemotingProcessor;
 import org.apache.rocketmq.proxy.service.message.ClusterMessageService;
 import org.apache.rocketmq.proxy.service.message.MessageService;
 import org.apache.rocketmq.proxy.service.metadata.ClusterMetadataService;
+import org.apache.rocketmq.proxy.service.metadata.LocalMetadataService;
 import org.apache.rocketmq.proxy.service.metadata.MetadataService;
 import org.apache.rocketmq.proxy.service.relay.ClusterProxyRelayService;
 import org.apache.rocketmq.proxy.service.relay.ProxyRelayService;
@@ -96,6 +97,7 @@ public class ClusterServiceManager extends AbstractStartAndShutdown implements S
         this.metadataService = new ClusterMetadataService(topicRouteService, operationClientAPIFactory);
         this.adminService = new DefaultAdminService(this.operationClientAPIFactory);
 
+        // 集群模式则proxy跟broker分离，且proxy独立管理当前连接的客户端情况
         this.producerManager = new ProducerManager();
         this.consumerManager = new ClusterConsumerManager(this.topicRouteService, this.adminService, this.operationClientAPIFactory, new ConsumerIdsChangeListenerImpl(), proxyConfig.getChannelExpiredTimeout(), rpcHook);
 

@@ -47,6 +47,13 @@ import org.apache.rocketmq.remoting.protocol.heartbeat.MessageModel;
 import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
 import org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfig;
 
+/**
+ * 定义了所有的客户端请求api，具体的请求处理，会交给AbstractProcessor的实现类。
+ *
+ * @see AbstractProcessor
+ * @see DefaultMessagingProcessor
+ * @see org.apache.rocketmq.proxy.service.ServiceManager
+ */
 public interface MessagingProcessor extends StartAndShutdown {
 
     long DEFAULT_TIMEOUT_MILLS = Duration.ofSeconds(2).toMillis();

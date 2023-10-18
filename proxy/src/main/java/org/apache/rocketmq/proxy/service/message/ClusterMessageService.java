@@ -50,6 +50,9 @@ import org.apache.rocketmq.remoting.protocol.header.QueryConsumerOffsetRequestHe
 import org.apache.rocketmq.remoting.protocol.header.SendMessageRequestHeader;
 import org.apache.rocketmq.remoting.protocol.header.UpdateConsumerOffsetRequestHeader;
 
+/**
+ * 将请求转发给remote broker处理。
+ */
 public class ClusterMessageService implements MessageService {
     protected final TopicRouteService topicRouteService;
     protected final MQClientAPIFactory mqClientAPIFactory;

@@ -22,6 +22,12 @@ import org.apache.rocketmq.proxy.common.ProxyException;
 import org.apache.rocketmq.proxy.common.ProxyExceptionCode;
 import org.apache.rocketmq.proxy.service.ServiceManager;
 
+/**
+ * 抽象的请求处理器，负责处理某些具体的请求。
+ * 由于请求的处理需要根据proxy的不同部署模式来进行区分，所以引入了serviceManager
+ *
+ * @see MessagingProcessor
+ */
 public abstract class AbstractProcessor extends AbstractStartAndShutdown {
 
     protected MessagingProcessor messagingProcessor;

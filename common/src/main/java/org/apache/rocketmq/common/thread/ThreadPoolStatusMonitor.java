@@ -19,11 +19,23 @@ package org.apache.rocketmq.common.thread;
 
 import java.util.concurrent.ThreadPoolExecutor;
 
+/**
+ * 线程池状态监听器，专门负责监听线程池某一个指标的状态值。
+ */
 public interface ThreadPoolStatusMonitor {
 
     String describe();
 
+    /**
+     * @param executor the thread pool that be monit
+     * @return the status's value by monitor concerned about
+     */
     double value(ThreadPoolExecutor executor);
 
+    /**
+     * @param executor the thread pool that be monit
+     * @param value the status value of some metric
+     * @return whether print the jstack log when the executor's some metric is current value
+     */
     boolean needPrintJstack(ThreadPoolExecutor executor, double value);
 }

@@ -181,10 +181,12 @@ public class ProxyStartup {
         MessagingProcessor messagingProcessor;
 
         if (ProxyMode.isClusterMode(proxyModeStr)) {
+            // 集群模式，通过网络通信
             messagingProcessor = DefaultMessagingProcessor.createForClusterMode();
             ProxyMetricsManager proxyMetricsManager = ProxyMetricsManager.initClusterMode(ConfigurationManager.getProxyConfig());
             PROXY_START_AND_SHUTDOWN.appendStartAndShutdown(proxyMetricsManager);
         } else if (ProxyMode.isLocalMode(proxyModeStr)) {
+            // 本地模式，启动broker，通过本地网络通信
             BrokerController brokerController = createBrokerController();
             ProxyMetricsManager.initLocalMode(brokerController.getBrokerMetricsManager(), ConfigurationManager.getProxyConfig());
             StartAndShutdown brokerControllerWrapper = new StartAndShutdown() {

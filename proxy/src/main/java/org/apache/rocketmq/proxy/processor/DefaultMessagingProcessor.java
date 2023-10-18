@@ -60,7 +60,13 @@ import org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfi
 public class DefaultMessagingProcessor extends AbstractStartAndShutdown implements MessagingProcessor {
 
     protected ServiceManager serviceManager;
+    /**
+     * 处理生产者请求的处理器
+     */
     protected ProducerProcessor producerProcessor;
+    /**
+     * 处理消费者请求的处理器
+     */
     protected ConsumerProcessor consumerProcessor;
     protected TransactionProcessor transactionProcessor;
     protected ClientProcessor clientProcessor;

@@ -77,6 +77,9 @@ import org.apache.rocketmq.remoting.protocol.header.UpdateConsumerOffsetRequestH
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 
+/**
+ * 相关请求处理逻辑，将请求交给 本进程中的 broker 处理，没有网络IO。
+ */
 public class LocalMessageService implements MessageService {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
     private final BrokerController brokerController;
@@ -117,6 +120,9 @@ public class LocalMessageService implements MessageService {
                 invocationContext.handle(response);
                 channel.eraseInvocationContext(request.getOpaque());
             }
+            // 如果response为Null,最终的结果就是，这个future，如果没有被.get()，那么这个future就会一直悬在那里，直到被channel清除
+            // 每个channel会持有一个map对象，包含所有自己在处理中的请求
+            // 这时候 这个future可能就，没有任何地方引用了，结果就是被GC
         } catch (Exception e) {
             future.completeExceptionally(e);
             channel.eraseInvocationContext(request.getOpaque());

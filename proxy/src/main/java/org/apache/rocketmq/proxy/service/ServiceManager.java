@@ -26,6 +26,12 @@ import org.apache.rocketmq.proxy.service.relay.ProxyRelayService;
 import org.apache.rocketmq.proxy.service.route.TopicRouteService;
 import org.apache.rocketmq.proxy.service.transaction.TransactionService;
 
+/**
+ * 这一层则是对proxy cluster 和 local 部署模式的具体实现所在。
+ *
+ * @see LocalServiceManager
+ * @see ClusterServiceManager
+ */
 public interface ServiceManager extends StartAndShutdown {
     MessageService getMessageService();
 
