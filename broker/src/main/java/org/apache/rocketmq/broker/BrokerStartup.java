@@ -47,7 +47,7 @@ public class BrokerStartup {
     public static final SystemConfigFileHelper CONFIG_FILE_HELPER = new SystemConfigFileHelper();
 
     public static void main(String[] args) {
-        start(createBrokerController(args));
+        BrokerController start = start(createBrokerController(args));
     }
 
     public static BrokerController start(BrokerController controller) {

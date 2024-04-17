@@ -178,15 +178,36 @@ public class BrokerController {
     private final NettyServerConfig nettyServerConfig;
     private final NettyClientConfig nettyClientConfig;
     protected final MessageStoreConfig messageStoreConfig;
+
+    /**
+     * 消费情况
+     */
     protected final ConsumerOffsetManager consumerOffsetManager;
-    protected final BroadcastOffsetManager broadcastOffsetManager;
+    /**
+     * 消费者连接
+     */
     protected final ConsumerManager consumerManager;
+    /**
+     * 生产者连接
+     */
+    protected final ProducerManager producerManager;
+    /**
+     * topic信息
+     */
+    protected TopicConfigManager topicConfigManager;
     protected final ConsumerFilterManager consumerFilterManager;
+    protected final BroadcastOffsetManager broadcastOffsetManager;
     protected final ConsumerOrderInfoManager consumerOrderInfoManager;
     protected final PopInflightMessageCounter popInflightMessageCounter;
-    protected final ProducerManager producerManager;
+    protected SubscriptionGroupManager subscriptionGroupManager;
+    protected TopicQueueMappingManager topicQueueMappingManager;
+    private final RebalanceLockManager rebalanceLockManager = new RebalanceLockManager();
+    private final TopicRouteInfoManager topicRouteInfoManager;
+
     protected final ScheduleMessageService scheduleMessageService;
     protected final ClientHousekeepingService clientHousekeepingService;
+    protected final PullRequestHoldService pullRequestHoldService;
+
     protected final PullMessageProcessor pullMessageProcessor;
     protected final PeekMessageProcessor peekMessageProcessor;
     protected final PopMessageProcessor popMessageProcessor;
@@ -198,13 +219,11 @@ public class BrokerController {
     protected final ClientManageProcessor clientManageProcessor;
     protected final SendMessageProcessor sendMessageProcessor;
     protected final ReplyMessageProcessor replyMessageProcessor;
-    protected final PullRequestHoldService pullRequestHoldService;
+
     protected final MessageArrivingListener messageArrivingListener;
     protected final Broker2Client broker2Client;
     protected final ConsumerIdsChangeListener consumerIdsChangeListener;
     protected final EndTransactionProcessor endTransactionProcessor;
-    private final RebalanceLockManager rebalanceLockManager = new RebalanceLockManager();
-    private final TopicRouteInfoManager topicRouteInfoManager;
     protected BrokerOuterAPI brokerOuterAPI;
     protected ScheduledExecutorService scheduledExecutorService;
     protected ScheduledExecutorService syncBrokerMemberGroupExecutorService;
@@ -230,9 +249,7 @@ public class BrokerController {
     protected RemotingServer remotingServer;
     protected CountDownLatch remotingServerStartLatch;
     protected RemotingServer fastRemotingServer;
-    protected TopicConfigManager topicConfigManager;
-    protected SubscriptionGroupManager subscriptionGroupManager;
-    protected TopicQueueMappingManager topicQueueMappingManager;
+
     protected ExecutorService sendMessageExecutor;
     protected ExecutorService pullMessageExecutor;
     protected ExecutorService litePullMessageExecutor;
@@ -246,6 +263,7 @@ public class BrokerController {
     protected ExecutorService consumerManageExecutor;
     protected ExecutorService loadBalanceExecutor;
     protected ExecutorService endTransactionExecutor;
+
     protected boolean updateMasterHAServerAddrPeriodically = false;
     private BrokerStats brokerStats;
     private InetSocketAddress storeHost;
@@ -785,6 +803,11 @@ public class BrokerController {
         return result;
     }
 
+    /**
+     * 1. 初始化元信息,主要是从文件系统加载。
+     * 2. 初始化消息存储器。
+     * 3. 初始化其他服务。
+     */
     public boolean initialize() throws CloneNotSupportedException {
 
         boolean result = this.initializeMetadata();

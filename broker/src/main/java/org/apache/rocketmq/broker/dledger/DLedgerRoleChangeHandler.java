@@ -77,6 +77,7 @@ public class DLedgerRoleChangeHandler implements DLedgerLeaderElector.RoleChange
                                     succ = false;
                                     break;
                                 }
+                                // 如果本节点没有任何数据...
                                 if (dLegerServer.getDLedgerStore().getLedgerEndIndex() == -1) {
                                     break;
                                 }
@@ -103,6 +104,9 @@ public class DLedgerRoleChangeHandler implements DLedgerLeaderElector.RoleChange
         executorService.submit(runnable);
     }
 
+    /**
+     * @param role 如果是主就关闭同步，如果是从就开启同步。
+     */
     private void handleSlaveSynchronize(BrokerRole role) {
         if (role == BrokerRole.SLAVE) {
             if (null != slaveSyncFuture) {
@@ -160,6 +164,7 @@ public class DLedgerRoleChangeHandler implements DLedgerLeaderElector.RoleChange
         LOGGER.info("Begin to change to master brokerName={}", this.brokerController.getBrokerConfig().getBrokerName());
 
         //handle the slave synchronise
+        //first close the synchronize task
         handleSlaveSynchronize(role);
 
         this.brokerController.changeSpecialServiceStatus(true);

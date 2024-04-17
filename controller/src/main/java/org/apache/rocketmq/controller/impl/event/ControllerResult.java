@@ -20,11 +20,27 @@ import java.util.ArrayList;
 import java.util.List;
 import org.apache.rocketmq.remoting.protocol.ResponseCode;
 
+/**
+ * 控制组件请求处理的结果
+ * 1. 处理结果对应了哪些事件
+ * 2. 具体结果 response、body、responseCode，这三跟remotingCommand对应字段的含义是保持一致的。
+ *
+ * 比如：一个分配brokerId的事件。
+ * 1. 首先，创建本对象，并设置好本对象对应的事件。
+ * 2. 然后，记录事件，并等待事件被 stateMachine 应用，结果也就有了。
+ * 3.
+ * 如果第二步失败，就没有第三步。
+ */
 public class ControllerResult<T> {
     private final List<EventMessage> events;
+
+    /**
+     * @see org.apache.rocketmq.remoting.protocol.RemotingCommand
+     */
     private final T response;
     private byte[] body;
     private int responseCode = ResponseCode.SUCCESS;
+
     private String remark;
 
     public ControllerResult() {

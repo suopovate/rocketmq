@@ -224,7 +224,7 @@ public class ScheduleMessageService extends ConfigManager {
         result = result && this.correctDelayOffset();
         return result;
     }
-    
+
     public boolean loadWhenSyncDelayOffset() {
         boolean result = super.load();
         result = result && this.parseDelayLevel();
@@ -554,6 +554,7 @@ public class ScheduleMessageService extends ConfigManager {
 
         @Override
         public void run() {
+            // get the pending queue of current delayLevel
             LinkedBlockingQueue<PutResultProcess> pendingQueue =
                 ScheduleMessageService.this.deliverPendingTable.get(this.delayLevel);
 

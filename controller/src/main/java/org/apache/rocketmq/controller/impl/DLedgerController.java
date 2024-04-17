@@ -399,8 +399,28 @@ public class DLedgerController implements Controller {
             }
         }
 
-        public <T> CompletableFuture<RemotingCommand> appendEvent(final String name,
-            final Supplier<ControllerResult<T>> supplier, boolean isWriteEvent) {
+        /**
+         *
+         * 总结：先计算这个请求需要变更的数据 -> 然后将这种变更操作转换为事件 -> 然后等待dledger append事件并apply -> 返回rc对象给调用方。
+         *
+         * 整体流程：
+         * 1. 将请求处理和事件处理 包装成 EventHandler，丢给eventQueue
+         * 2. EventSchedule 会负责把这些事件，从队列中顺序取出，并执行
+         * 3. 事件处理包括
+         *  a. 供应商负责 处理请求 -> 处理结果对应的事件(状态机需要做出哪些更改) -> 同时处理结果也会被记录下来，最终结果 + 事件被包到 cr对象里
+         *  b. 将事件append到dledger(状态机会在未来apply这个事件)
+         *  c. 将处理结果 从cr 中 取出，填充到 remotingCommand对象中，然后通知返回的future.complete(rc)，搞定。
+         *
+         * @param name         事件名称
+         * @param supplier     用于提供事件或者结果的供应商
+         * @param isWriteEvent 是否是需要记录的事件，读事件要么不记录，要么几个空entry
+         * @param <T>
+         * @return 处理结果
+         */
+        public <T> CompletableFuture<RemotingCommand> appendEvent(
+            final String name,
+            final Supplier<ControllerResult<T>> supplier, boolean isWriteEvent
+        ) {
             if (isStopped() || !DLedgerController.this.roleHandler.isLeaderState()) {
                 final RemotingCommand command = RemotingCommand.createResponseCommand(ResponseCode.CONTROLLER_NOT_LEADER, "The controller is not in leader state");
                 final CompletableFuture<RemotingCommand> future = new CompletableFuture<>();

@@ -192,6 +192,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                 nettyClientConfig.getClientWorkerThreads(),
                 new ThreadFactoryImpl("NettyClientWorkerThread_"));
         }
+
         Bootstrap handler = this.bootstrap.group(this.eventLoopGroupWorker).channel(NioSocketChannel.class)
             .option(ChannelOption.TCP_NODELAY, true)
             .option(ChannelOption.SO_KEEPALIVE, false)
@@ -208,6 +209,8 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                             LOGGER.warn("Connections are insecure as SSLContext is null!");
                         }
                     }
+                    // 这么做的意义是什么呢？
+                    // 就是把这些操作，单独弄一个线程池去处理，跟netty原生的IO读写啥的分开。
                     ch.pipeline().addLast(
                         nettyClientConfig.isDisableNettyWorkerGroup() ? null : defaultEventExecutorGroup,
                         new NettyEncoder(),
@@ -445,6 +448,13 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
         }
     }
 
+    /**
+     * 这个方法
+     * 1. 清除本地channel表
+     * 2. 执行channel的close方法()
+     * 注意：本方法，在 NettyManageHandler中的 close 事件中也执行了...但是没事
+     * 因为channel的Close方法是可以重复调用的。
+     */
     public void closeChannel(final Channel channel) {
         if (null == channel) {
             return;
@@ -679,7 +689,6 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
         if (cw != null && cw.isOK()) {
             return cw.getChannel();
         }
-
         if (this.lockChannelTables.tryLock(LOCK_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
             try {
                 boolean createNewConnection;

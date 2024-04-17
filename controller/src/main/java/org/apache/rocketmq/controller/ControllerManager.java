@@ -64,12 +64,35 @@ public class ControllerManager {
     private final ControllerConfig controllerConfig;
     private final NettyServerConfig nettyServerConfig;
     private final NettyClientConfig nettyClientConfig;
-    private final BrokerHousekeepingService brokerHousekeepingService;
     private final Configuration configuration;
+
+    /**
+     * 就是一个用于监听channel事件的监听器，把channel的事件，转发给本类来处理，需要controller把这个东西注册到自己的nettyService里。
+     */
+    private final BrokerHousekeepingService brokerHousekeepingService;
+
+    /**
+     * 这个客户端，是管理器专用的，主要是用来与broker进行通信，比如: 通知它角色变更。
+     */
     private final RemotingClient remotingClient;
+    /**
+     * 真正的控制组件实例
+     */
     private Controller controller;
+    /**
+     * 心跳管理器，负责管理broker的心跳情况。
+     */
     private final BrokerHeartbeatManager heartbeatManager;
+
+    /**
+     * 需要跟上面的controller联合起来看，这个执行器的意义是
+     * 针对部分processor，因为Controller是个接口，可以有多种实现，所以这里将标准的 处理器，放在这里来注册。
+     * 针对这些处理器，就使用本执行器。
+     */
     private ExecutorService controllerRequestExecutor;
+    /**
+     * 给上面这个执行器的
+     */
     private BlockingQueue<Runnable> controllerRequestThreadPoolQueue;
     private final NotifyService notifyService;
     private ControllerMetricsManager controllerMetricsManager;

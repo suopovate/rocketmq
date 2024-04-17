@@ -18,6 +18,7 @@ package org.apache.rocketmq.store.config;
 
 import java.io.File;
 
+import org.apache.commons.collections.PredicateUtils;
 import org.apache.rocketmq.common.annotation.ImportantField;
 import org.apache.rocketmq.store.ConsumeQueue;
 import org.apache.rocketmq.store.StoreType;
@@ -1169,6 +1170,8 @@ public class MessageStoreConfig {
     }
 
     public void setdLegerSelfId(String dLegerSelfId) {
+        // 检查一下格式
+
         this.dLegerSelfId = dLegerSelfId;
     }
 

@@ -54,6 +54,19 @@ import org.apache.rocketmq.proxy.remoting.RemotingProtocolServer;
 import org.apache.rocketmq.remoting.protocol.RemotingCommand;
 import org.apache.rocketmq.srvutil.ServerUtil;
 
+/**
+ * 代理模式分为cluster和local两种。
+ * cluster：等于单独有一个Proxy集群。
+ * local：每个proxy进程里同时启动一个正常的broker进程，请求发给proxy，proxy转发给对应的broker。
+ * 类设计：
+ * ServiceManager - XxxService
+ * ClusterServiceManager - XxxClusterService
+ * LocalServiceManager - XxxLocalService
+ * 具体流程：
+ * ServiceManagerFactory ---proxyMode---> 获取 local/cluster ServiceManager -> 获取 local/cluster XxxService -> 调用具体api
+ * 如果是cluster，请求进来，转发给对应的broker。
+ * 如果是local，请求进来，判断是否为本broker，是则直接调用brokerController对应的processor的接口，否则，走网络请求调用对应的broker接口。
+ */
 public class ProxyStartup {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
     private static final ProxyStartAndShutdown PROXY_START_AND_SHUTDOWN = new ProxyStartAndShutdown();

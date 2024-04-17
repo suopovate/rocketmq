@@ -38,6 +38,11 @@ import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 import org.apache.rocketmq.remoting.common.RemotingHelper;
 
+/**
+ * 1. 定时心跳情况检测，定时任务，检测broker心跳上报的情况。
+ *    如果发现broker上报时间超时，说明broker断开咯，通知。
+ * 2. 同时也负责保存心跳信息，处理心跳上报逻辑。
+ */
 public class DefaultBrokerHeartbeatManager implements BrokerHeartbeatManager {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.CONTROLLER_LOGGER_NAME);
 
