@@ -63,6 +63,8 @@ public class RouteActivity extends AbstractMessingActivity {
         CompletableFuture<QueryRouteResponse> future = new CompletableFuture<>();
         try {
             validateTopic(request.getTopic());
+            // 从请求中把其请求的端点列表转换为通用的地址列表
+            // 这里有一个很特殊的地方，客户端需要传递 其 关注的proxy的地址，也就是这里。
             List<org.apache.rocketmq.proxy.common.Address> addressList = this.convertToAddressList(request.getEndpoints());
 
             String topicName = request.getTopic().getName();

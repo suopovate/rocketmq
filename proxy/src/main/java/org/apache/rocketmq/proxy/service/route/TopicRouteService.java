@@ -203,11 +203,12 @@ public abstract class TopicRouteService extends AbstractStartAndShutdown {
     public abstract AddressableMessageQueue buildAddressableMessageQueue(ProxyContext ctx, MessageQueue messageQueue) throws Exception;
 
     protected static MessageQueueView getCacheMessageQueueWrapper(LoadingCache<String, MessageQueueView> topicCache,
-        String key) throws Exception {
-        MessageQueueView res = topicCache.get(key);
-        if (res != null && res.isEmptyCachedQueue()) {
+        String topicName) throws Exception {
+        // here should judge topicRouteData is null or not modify by vate
+        MessageQueueView res = topicCache.get(topicName);
+        if (res == null || res.isEmptyCachedQueue()) {
             throw new MQClientException(ResponseCode.TOPIC_NOT_EXIST,
-                "No topic route info in name server for the topic: " + key);
+                "No topic route info in name server for the topic: " + topicName);
         }
         return res;
     }

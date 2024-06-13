@@ -573,6 +573,9 @@ public class MappedFileQueue implements Swappable {
         return deleteCount;
     }
 
+    /**
+     * 删除所有timerLog中已经不存在于cml中的消息
+     */
     public int deleteExpiredFileByOffsetForTimerLog(long offset, int checkOffset, int unitSize) {
         Object[] mfs = this.copyMappedFiles(0);
 
@@ -594,6 +597,7 @@ public class MappedFileQueue implements Swappable {
                         int magic = result.getByteBuffer().getInt();
                         if (size == unitSize && (magic | 0xF) == 0xF) {
                             result.getByteBuffer().position(position + MixAll.UNIT_PRE_SIZE_FOR_MSG);
+                            // 获取timerLog对应的消息物理偏移量
                             long maxOffsetPy = result.getByteBuffer().getLong();
                             destroy = maxOffsetPy < offset;
                             if (destroy) {

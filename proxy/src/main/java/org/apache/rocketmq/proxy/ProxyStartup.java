@@ -69,6 +69,10 @@ import org.apache.rocketmq.srvutil.ServerUtil;
  */
 public class ProxyStartup {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
+
+    /**
+     * Concise of all start and shutdown components.
+     */
     private static final ProxyStartAndShutdown PROXY_START_AND_SHUTDOWN = new ProxyStartAndShutdown();
 
     private static class ProxyStartAndShutdown extends AbstractStartAndShutdown {
@@ -89,11 +93,13 @@ public class ProxyStartup {
 
             ThreadPoolExecutor executor = createServerExecutor();
 
+            // 消息处理需要转发给Broker，分为集群和本地模式。
             MessagingProcessor messagingProcessor = createMessagingProcessor();
 
             List<AccessValidator> accessValidators = loadAccessValidators();
-            // create grpcServer
-            GrpcServer grpcServer = GrpcServerBuilder.newBuilder(executor, ConfigurationManager.getProxyConfig().getGrpcServerPort())
+            // 新客户端支持 create grpcServer
+            GrpcServer grpcServer = GrpcServerBuilder
+                .newBuilder(executor, ConfigurationManager.getProxyConfig().getGrpcServerPort())
                 .addService(createServiceProcessor(messagingProcessor))
                 .addService(ChannelzService.newInstance(100))
                 .addService(ProtoReflectionService.newInstance())
@@ -102,6 +108,7 @@ public class ProxyStartup {
                 .build();
             PROXY_START_AND_SHUTDOWN.appendStartAndShutdown(grpcServer);
 
+            // 旧客户端支持
             RemotingProtocolServer remotingServer = new RemotingProtocolServer(messagingProcessor, accessValidators);
             PROXY_START_AND_SHUTDOWN.appendStartAndShutdown(remotingServer);
 

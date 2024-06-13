@@ -73,6 +73,27 @@ import org.apache.rocketmq.store.queue.ReferredIterator;
 import org.apache.rocketmq.store.stats.BrokerStatsManager;
 import org.apache.rocketmq.store.util.PerfCounter;
 
+/**
+ * 1. time 消息 - 固定topic-queue
+ * 2. 时间轮 - 一个单独文件 - 存放所有的slot - 每个slot是一个链表 - 指向 timerLog
+ * 3. timerLog - 单独的mmapFileQueue - 存放所有的time消息
+ *
+ * 1. 消息投递至 topic
+ * 2. 定时任务 消费消息 - 异步存入 timerLog - 再异步存入 时间轮
+ * 3. 定时任务 检查时间轮 - 扫描slot - 找出对应timerLog - 到期就投递回正常topic
+ *
+ *
+ * 消息堆积的点:
+ * 1. msg队列
+ * 2. timeLog
+ * 3. 时间轮,主要是存储slot,空间占用不大
+ *
+ * 假如 千万消息进来,首先进入mst队列,然后异步消费,存入timeLog,问题不大,然后时间轮slot记录一下链表头尾就行,问题不大
+ * 然后 问题来了,投递消息的时候,数据量这么大,是怎么处理的
+ * 1. slot 滚动是怎么回事
+ * 2. slot 数据量大是如何考虑的
+ *
+ */
 public class TimerMessageStore {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
@@ -127,10 +148,19 @@ public class TimerMessageStore {
     private TimerFlushService timerFlushService;
 
     protected volatile long currReadTimeMs;
+    /**
+     * 记录最后一次写入数据的时间
+     */
     protected volatile long currWriteTimeMs;
     protected volatile long preReadTimeMs;
     protected volatile long commitReadTimeMs;
+    /**
+     * 保存当前已经消费到了的消息队列位点(投入了处理队列,可能还没插入timerLog)
+     */
     protected volatile long currQueueOffset; //only one queue that is 0
+    /**
+     * 已经保存到timerLog中的消息队列位点
+     */
     protected volatile long commitQueueOffset;
     protected volatile long lastCommitReadTimeMs;
     protected volatile long lastCommitQueueOffset;
@@ -140,6 +170,16 @@ public class TimerMessageStore {
 
     private final int commitLogFileSize;
     private final int timerLogFileSize;
+    /**
+     * 一轮的槽数,投递的时间,最多能超过一轮,注意,这个窗口是个逻辑窗口,大小<=slotsTotal,
+     *
+     * 这个字段主要是用在 插入timerLog的时候,计算出当前时间应该插入哪个slot,并且计算出是否需要roll
+     *
+     * 这个字段相当于是一个小轮盘,用于缩小落盘范围用的,假如没有这个字段,那我们的轮盘大小就是 slotTotal的大小,你是没法控制的了.
+     * 有这个的话,我们就可以控制轮盘的大小了,比如我们slotTotal固定是14天的秒数,那我们轮盘可以考虑调整为1天的秒数.
+     *
+     * 那为什么要调整呢? 没想出为什么,感觉只是为了扩展而已.
+     */
     private final int timerRollWindowSlots;
     private final int slotsTotal;
 
@@ -192,6 +232,7 @@ public class TimerMessageStore {
             || storeConfig.getTimerRollWindowSlot() < 2) {
             this.timerRollWindowSlots = slotsTotal - TIMER_BLANK_SLOTS;
         } else {
+            // 默认是两天的秒数一轮
             this.timerRollWindowSlots = storeConfig.getTimerRollWindowSlot();
         }
 
@@ -453,8 +494,10 @@ public class TimerMessageStore {
     public void start() {
         this.shouldStartTime = storeConfig.getDisappearTimeAfterStart() + System.currentTimeMillis();
         maybeMoveWriteTime();
+        // enqueue 是指从cml拉消息到时间轮
         enqueueGetService.start();
         enqueuePutService.start();
+        // dequeue 是指从时间轮拉消息出来投递
         dequeueWarmService.start();
         dequeueGetService.start();
         for (int i = 0; i < dequeueGetMessageServices.length; i++) {
@@ -465,6 +508,8 @@ public class TimerMessageStore {
         }
         timerFlushService.start();
 
+
+        // 清理一些已经不存在了的消息
         scheduler.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
@@ -479,6 +524,7 @@ public class TimerMessageStore {
             }
         }, 30, 30, TimeUnit.SECONDS);
 
+        // 指标监控
         scheduler.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
@@ -725,14 +771,19 @@ public class TimerMessageStore {
         LOGGER.debug("Do enqueue [{}] [{}]", new Timestamp(delayedTime), messageExt);
         //copy the value first, avoid concurrent problem
         long tmpWriteTimeMs = currWriteTimeMs;
+        // 超过了逻辑窗口, 则需要roll
         boolean needRoll = delayedTime - tmpWriteTimeMs >= (long) timerRollWindowSlots * precisionMs;
         int magic = MAGIC_DEFAULT;
         if (needRoll) {
+            // 这个非常重要,标识这个消息是在滚动的
             magic = magic | MAGIC_ROLL;
+            // 如果只是超过 一轮 但是,不超过 1 + 1/3 轮, 那么就算半轮
+            // c td d
             if (delayedTime - tmpWriteTimeMs - (long) timerRollWindowSlots * precisionMs < (long) timerRollWindowSlots / 3 * precisionMs) {
                 //give enough time to next roll
                 delayedTime = tmpWriteTimeMs + (long) (timerRollWindowSlots / 2) * precisionMs;
             } else {
+                // 放入下一轮去
                 delayedTime = tmpWriteTimeMs + (long) timerRollWindowSlots * precisionMs;
             }
         }
@@ -748,6 +799,7 @@ public class TimerMessageStore {
         tmpBuffer.putLong(slot.lastPos); //prev pos
         tmpBuffer.putInt(magic); //magic
         tmpBuffer.putLong(tmpWriteTimeMs); //currWriteTime
+        // 延迟delayedTime后执行
         tmpBuffer.putInt((int) (delayedTime - tmpWriteTimeMs)); //delayTime
         tmpBuffer.putLong(offsetPy); //offset
         tmpBuffer.putInt(sizePy); //size
@@ -757,8 +809,13 @@ public class TimerMessageStore {
         if (-1 != ret) {
             // If it's a delete message, then slot's total num -1
             // TODO: check if the delete msg is in the same slot with "the msg to be deleted".
-            timerWheel.putSlot(delayedTime, slot.firstPos == -1 ? ret : slot.firstPos, ret,
-                isDelete ? slot.num - 1 : slot.num + 1, slot.magic);
+            timerWheel.putSlot(
+                delayedTime,
+                slot.firstPos == -1 ? ret : slot.firstPos,
+                ret,
+                isDelete ? slot.num - 1 : slot.num + 1,
+                slot.magic
+            );
             addMetric(messageExt, isDelete ? -1 : 1);
         }
         return -1 != ret;
@@ -910,6 +967,7 @@ public class TimerMessageStore {
             //clear the flag
             dequeueStatusChangeFlag = false;
 
+            // 从slot最后一个开始
             long currOffsetPy = slot.lastPos;
             Set<String> deleteUniqKeys = new ConcurrentSkipListSet<>();
             LinkedList<TimerRequest> normalMsgStack = new LinkedList<>();
@@ -1065,6 +1123,7 @@ public class TimerMessageStore {
             }
         }
         MessageAccessor.putProperty(messageExt, TIMER_DEQUEUE_MS, System.currentTimeMillis() + "");
+        // 注意看这里
         MessageExtBrokerInner message = convertMessage(messageExt, needRoll);
         return message;
     }
@@ -1145,6 +1204,7 @@ public class TimerMessageStore {
 
         msgInner.setWaitStoreMsgOK(false);
 
+        // 滚动算法实现的钩子
         if (needRoll) {
             msgInner.setTopic(msgExt.getTopic());
             msgInner.setQueueId(msgExt.getQueueId());
@@ -1300,6 +1360,8 @@ public class TimerMessageStore {
             TimerMessageStore.LOGGER.info(this.getServiceName() + " service start");
             while (!this.isStopped()) {
                 try {
+                    // 专门有一个 topic - queue 用来放所有投递进来的消息
+                    // 从里边拉消息出来
                     if (!TimerMessageStore.this.enqueue(0)) {
                         waitForRunning(100L * precisionMs / 1000);
                     }
@@ -1360,8 +1422,7 @@ public class TimerMessageStore {
                     req.setEnqueueTime(Long.MAX_VALUE);
                     dequeuePutQueue.put(req);
                 } else {
-                    boolean doEnqueueRes = doEnqueue(
-                        req.getOffsetPy(), req.getSizePy(), req.getDelayTime(), req.getMsg());
+                    boolean doEnqueueRes = doEnqueue(req.getOffsetPy(), req.getSizePy(), req.getDelayTime(), req.getMsg());
                     req.idempotentRelease(doEnqueueRes || storeConfig.isTimerSkipUnknownError());
                 }
                 perfCounterTicks.endTick(ENQUEUE_PUT);
@@ -1416,6 +1477,9 @@ public class TimerMessageStore {
         }
     }
 
+    /**
+     * 负责从时间轮中检查slot,并且将消息投递给  TimerDequeueGetMessageService 去处理
+     */
     public class TimerDequeueGetService extends ServiceThread {
 
         @Override
@@ -1457,6 +1521,9 @@ public class TimerMessageStore {
         }
     }
 
+    /**
+     * 把消息放入真实topic
+     */
     public class TimerDequeuePutMessageService extends AbstractStateService {
 
         @Override
@@ -1494,6 +1561,8 @@ public class TimerMessageStore {
                                     MessageAccessor.putProperty(msgExt, TIMER_ENQUEUE_MS, String.valueOf(Long.MAX_VALUE));
                                 }
                                 addMetric(msgExt, -1);
+                                // 在这里 如果消息需要继续滚动,就把他重新投入到 最初的timerMsg队列,然后重新走整个流程
+                                // 通过needRoll,然后来设置msg的topic来实现.
                                 MessageExtBrokerInner msg = convert(msgExt, tr.getEnqueueTime(), needRoll(tr.getMagic()));
                                 doRes = PUT_NEED_RETRY != doPut(msg, needRoll(tr.getMagic()));
                                 while (!doRes && !isStopped()) {
@@ -1528,6 +1597,9 @@ public class TimerMessageStore {
         }
     }
 
+    /**
+     * 负责处理从commitLog中获取消息内容
+     */
     public class TimerDequeueGetMessageService extends AbstractStateService {
 
         @Override

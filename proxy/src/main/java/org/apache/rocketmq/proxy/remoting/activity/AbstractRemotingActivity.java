@@ -48,6 +48,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
+/**
+ * All the requests from clients,will be forwarded to the broker local or remote.
+ * And we can do something check or authentication before we call the real processor.
+ */
 public abstract class AbstractRemotingActivity implements NettyRequestProcessor {
     protected final static Logger log = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
     protected final MessagingProcessor messagingProcessor;

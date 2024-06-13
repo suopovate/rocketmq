@@ -39,6 +39,10 @@ import org.apache.rocketmq.remoting.protocol.route.BrokerData;
 import org.apache.rocketmq.remoting.protocol.statictopic.TopicConfigAndQueueMapping;
 import org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfig;
 
+/**
+ * cluster metadata is cached in current application,and it will be refreshed periodically.
+ * The cache data is obtained from nameserver.
+ */
 public class ClusterMetadataService extends AbstractStartAndShutdown implements MetadataService {
     protected static final Logger log = LoggerFactory.getLogger(LoggerName.PROXY_LOGGER_NAME);
     private static final long DEFAULT_TIMEOUT = 3000;

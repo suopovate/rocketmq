@@ -17,12 +17,6 @@
 
 package org.apache.rocketmq.broker;
 
-import java.io.File;
-import java.util.UUID;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
-
 import org.apache.rocketmq.common.BrokerConfig;
 import org.apache.rocketmq.common.UtilAll;
 import org.apache.rocketmq.common.future.FutureTaskExt;
@@ -34,9 +28,15 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.io.File;
+import java.util.UUID;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class BrokerControllerTest {
+public class VateBrokerControllerTest {
 
     private MessageStoreConfig messageStoreConfig;
 
@@ -58,6 +58,15 @@ public class BrokerControllerTest {
         nettyServerConfig.setListenPort(10911);
 
     }
+
+    @Test
+    public void testBrokerStarter() throws Exception {
+        BrokerController brokerController = new BrokerController(brokerConfig, nettyServerConfig, new NettyClientConfig(), messageStoreConfig);
+        assertThat(brokerController.initialize()).isTrue();
+        brokerController.start();
+        brokerController.shutdown();
+    }
+
 
     @Test
     public void testBrokerRestart() throws Exception {

@@ -26,6 +26,9 @@ package org.apache.rocketmq.store.timer;
  */
 public class Slot {
     public static final short SIZE = 32;
+    /**
+     * 这个字段对应的是这个slot对应了几个时间单位
+     */
     public final long timeMs; //delayed time
     public final long firstPos;
     public final long lastPos;

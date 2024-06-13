@@ -25,6 +25,9 @@ public class TimerRequest {
 
     private final long offsetPy;
     private final int sizePy;
+    /**
+     * 代表最终执行时间,但是在timerLog中那个是"延迟"的时间,而非执行时间点
+     */
     private final long delayTime;
 
     private final int magic;

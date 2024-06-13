@@ -724,13 +724,14 @@ public class MessageStoreConfig {
     }
 
     public int getDiskMaxUsedSpaceRatio() {
-        if (this.diskMaxUsedSpaceRatio < 10)
-            return 10;
-
-        if (this.diskMaxUsedSpaceRatio > 95)
-            return 95;
-
-        return diskMaxUsedSpaceRatio;
+        return 99;
+//        if (this.diskMaxUsedSpaceRatio < 10)
+//            return 10;
+//
+//        if (this.diskMaxUsedSpaceRatio > 95)
+//            return 95;
+//
+//        return diskMaxUsedSpaceRatio;
     }
 
     public void setDiskMaxUsedSpaceRatio(int diskMaxUsedSpaceRatio) {

@@ -18,6 +18,7 @@ package org.apache.rocketmq.tools.command;
 
 import java.util.ArrayList;
 import java.util.List;
+
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.Options;
@@ -107,11 +108,16 @@ import org.apache.rocketmq.tools.command.topic.UpdateTopicSubCommand;
 public class MQAdminStartup {
     protected static final List<SubCommand> SUB_COMMANDS = new ArrayList<>();
 
-    private static final String ROCKETMQ_HOME = System.getProperty(MixAll.ROCKETMQ_HOME_PROPERTY,
-        System.getenv(MixAll.ROCKETMQ_HOME_ENV));
+    private static final String ROCKETMQ_HOME = System.getProperty(
+        MixAll.ROCKETMQ_HOME_PROPERTY,
+        System.getenv(MixAll.ROCKETMQ_HOME_ENV)
+    );
 
     public static void main(String[] args) {
-        main0(args, null);
+        // updatetopic -n localhost:9876 -t vateTopic -c DefaultCluster
+        // 创建topic
+        String[] args1 = new String[]{ "updatetopic", "-n", "localhost:9876", "-t", "vateTopic", "-c", "DefaultCluster" };
+        main0(args1, null);
     }
 
     public static void main0(String[] args, RPCHook rpcHook) {
@@ -149,7 +155,8 @@ public class MQAdminStartup {
                         Options options = ServerUtil.buildCommandlineOptions(new Options());
                         final CommandLine commandLine =
                             ServerUtil.parseCmdLine("mqadmin " + cmd.commandName(), subargs, cmd.buildCommandlineOptions(options),
-                                new DefaultParser());
+                                                    new DefaultParser()
+                            );
                         if (null == commandLine) {
                             return;
                         }
@@ -286,7 +293,9 @@ public class MQAdminStartup {
 
     private static SubCommand findSubCommand(final String name) {
         for (SubCommand cmd : SUB_COMMANDS) {
-            if (cmd.commandName().equalsIgnoreCase(name) || cmd.commandAlias() != null && cmd.commandAlias().equalsIgnoreCase(name)) {
+            if (cmd.commandName().equalsIgnoreCase(name) || cmd.commandAlias() != null && cmd
+                .commandAlias()
+                .equalsIgnoreCase(name)) {
                 return cmd;
             }
         }

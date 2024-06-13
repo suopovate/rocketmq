@@ -81,6 +81,10 @@ public class GrpcServerBuilder {
             port, bossLoopNum, workerLoopNum, maxInboundMessageSize);
     }
 
+    /**
+     * what a foolish name?
+     * It should be called "waitShutDownTimeOut" instead of "shutdownTime".
+     */
     public GrpcServerBuilder shutdownTime(long time, TimeUnit unit) {
         this.time = time;
         this.unit = unit;

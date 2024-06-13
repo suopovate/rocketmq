@@ -29,10 +29,19 @@ import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 
+/**
+ * 一个时间轮就是一个slot数组,每个slot对应一个最小的时间单元.
+ * @see TimerLog
+ * @see Slot
+ */
 public class TimerWheel {
 
     private static final Logger log = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     public static final int BLANK = -1, IGNORE = -2;
+    /**
+     * ???这竟然不是最终的slot数,最终用的时候都会*2,不理解这是什么操作.
+     * 好像是为了roll
+     */
     public final int slotsTotal;
     public final int precisionMs;
     private String fileName;
@@ -123,11 +132,17 @@ public class TimerWheel {
     //testable
     public Slot getRawSlot(long timeMs) {
         localBuffer.get().position(getSlotIndex(timeMs) * Slot.SIZE);
-        return new Slot(localBuffer.get().getLong() * precisionMs,
-            localBuffer.get().getLong(), localBuffer.get().getLong(), localBuffer.get().getInt(), localBuffer.get().getInt());
+        return new Slot(
+            localBuffer.get().getLong() * precisionMs,
+            localBuffer.get().getLong(), localBuffer.get().getLong(),
+            localBuffer.get().getInt(), localBuffer.get().getInt()
+        );
     }
 
     public int getSlotIndex(long timeMs) {
+        // 将时间按照,precisionMs为长度,分成n个段
+        // 此处是计算当前时间算在的格子:timeMs / precisionMs
+        // 然后映射到 slot index上
         return (int) (timeMs / precisionMs % (slotsTotal * 2));
     }
 
@@ -149,8 +164,10 @@ public class TimerWheel {
     }
 
     public void reviseSlot(long timeMs, long firstPos, long lastPos, boolean force) {
+        // 找到slot
         localBuffer.get().position(getSlotIndex(timeMs) * Slot.SIZE);
 
+        // 检查slot的时间是不是当前时间的
         if (timeMs / precisionMs != localBuffer.get().getLong()) {
             if (force) {
                 putSlot(timeMs, firstPos != IGNORE ? firstPos : lastPos, lastPos);
@@ -206,4 +223,5 @@ public class TimerWheel {
         }
         return allNum;
     }
+
 }
