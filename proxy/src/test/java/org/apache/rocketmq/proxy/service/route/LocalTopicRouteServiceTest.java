@@ -97,9 +97,11 @@ public class LocalTopicRouteServiceTest extends BaseServiceTest {
 
         assertEquals(1, proxyTopicRouteData.getBrokerDatas().size());
         assertEquals(
-            Lists.newArrayList(new Address(Address.AddressScheme.IPv4, HostAndPort.fromParts(
+            Lists.newArrayList(
+                new Address(Address.AddressScheme.IPv4, HostAndPort.fromParts(
                 HostAndPort.fromString(BROKER_ADDR).getHost(),
-                ConfigurationManager.getProxyConfig().getGrpcServerPort()))),
+                ConfigurationManager.getProxyConfig().getGrpcServerPort()))
+            ),
             proxyTopicRouteData.getBrokerDatas().get(0).getBrokerAddrs().get(MixAll.MASTER_ID));
     }
 }

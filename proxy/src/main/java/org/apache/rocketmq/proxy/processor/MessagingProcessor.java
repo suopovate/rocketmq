@@ -48,6 +48,9 @@ import org.apache.rocketmq.remoting.protocol.heartbeat.SubscriptionData;
 import org.apache.rocketmq.remoting.protocol.subscription.SubscriptionGroupConfig;
 
 /**
+ * 这个 不管是remote还是 grpc，都需要用到
+ * 它代表了真正的处理器，包括local和cluster两种模式，最终都是由broker来具体执行
+ *
  * 定义了所有的客户端请求api，具体的请求处理，会交给AbstractProcessor的实现类。
  *
  * @see AbstractProcessor

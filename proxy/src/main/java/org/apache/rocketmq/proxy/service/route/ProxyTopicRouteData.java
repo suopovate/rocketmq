@@ -21,12 +21,83 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import com.google.common.collect.Lists;
+import com.google.common.net.HostAndPort;
 import org.apache.rocketmq.proxy.common.Address;
 import org.apache.rocketmq.remoting.protocol.route.BrokerData;
 import org.apache.rocketmq.remoting.protocol.route.QueueData;
 import org.apache.rocketmq.remoting.protocol.route.TopicRouteData;
 
 public class ProxyTopicRouteData {
+    public ProxyTopicRouteData() {
+    }
+
+    public ProxyTopicRouteData(TopicRouteData topicRouteData) {
+        this.queueDatas = topicRouteData.getQueueDatas();
+        this.brokerDatas = new ArrayList<>();
+
+        for (BrokerData brokerData : topicRouteData.getBrokerDatas()) {
+            ProxyTopicRouteData.ProxyBrokerData proxyBrokerData = new ProxyTopicRouteData.ProxyBrokerData();
+            proxyBrokerData.setCluster(brokerData.getCluster());
+            proxyBrokerData.setBrokerName(brokerData.getBrokerName());
+            for (Long brokerId : brokerData.getBrokerAddrs().keySet()) {
+                String brokerAddr = brokerData.getBrokerAddrs().get(brokerId);
+                HostAndPort hostAndPort = HostAndPort.fromString(brokerAddr);
+
+                proxyBrokerData.getBrokerAddrs().put(brokerId, Lists.newArrayList(new Address(Address.AddressScheme.IPv4, hostAndPort)));
+            }
+            this.brokerDatas.add(proxyBrokerData);
+        }
+    }
+
+    public ProxyTopicRouteData(TopicRouteData topicRouteData, int port) {
+
+        this.queueDatas = topicRouteData.getQueueDatas();
+        this.brokerDatas = new ArrayList<>();
+
+        // 所有的broker集群
+        for (BrokerData brokerData : topicRouteData.getBrokerDatas()) {
+            ProxyTopicRouteData.ProxyBrokerData proxyBrokerData = new ProxyTopicRouteData.ProxyBrokerData();
+            proxyBrokerData.setCluster(brokerData.getCluster());
+            proxyBrokerData.setBrokerName(brokerData.getBrokerName());
+
+
+            // 单个broker集群
+//            for (Long brokerId : brokerData.getBrokerAddrs().keySet()) {
+//                String brokerAddr = brokerData.getBrokerAddrs().get(brokerId);
+//                HostAndPort brokerHostAndPort = HostAndPort.fromString(brokerAddr);
+//                HostAndPort hostAndPort = HostAndPort.fromParts(brokerHostAndPort.getHost(), port);
+//
+//                proxyBrokerData.getBrokerAddrs().put(brokerId, Lists.newArrayList(new Address(Address.AddressScheme.IPv4, hostAndPort)));
+//            }
+            // optimize by vate
+                brokerData.getBrokerAddrs().forEach((brokerId, brokerAddr) -> {
+                    HostAndPort brokerHostAndPort = HostAndPort.fromString(brokerAddr);
+                    HostAndPort hostAndPort = HostAndPort.fromParts(brokerHostAndPort.getHost(), port);
+
+                    proxyBrokerData.getBrokerAddrs().put(brokerId, Lists.newArrayList(new Address(Address.AddressScheme.IPv4, hostAndPort)));
+                });
+
+            this.brokerDatas.add(proxyBrokerData);
+        }
+    }
+
+    public ProxyTopicRouteData(TopicRouteData topicRouteData, List<Address> requestHostAndPortList) {
+        this.queueDatas = topicRouteData.getQueueDatas();
+        this.brokerDatas = new ArrayList<>();
+
+        for (BrokerData brokerData : topicRouteData.getBrokerDatas()) {
+            ProxyTopicRouteData.ProxyBrokerData proxyBrokerData = new ProxyTopicRouteData.ProxyBrokerData();
+            proxyBrokerData.setCluster(brokerData.getCluster());
+            proxyBrokerData.setBrokerName(brokerData.getBrokerName());
+            // 所有broker的地址，都是这一批proxy的地址
+            for (Long brokerId : brokerData.getBrokerAddrs().keySet()) {
+                proxyBrokerData.getBrokerAddrs().put(brokerId, requestHostAndPortList);
+            }
+            this.brokerDatas.add(proxyBrokerData);
+        }
+    }
 
     public static class ProxyBrokerData {
         private String cluster;
