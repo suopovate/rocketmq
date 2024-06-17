@@ -412,6 +412,7 @@
 
     <logger name="RocketmqProxy" additivity="false" level="INFO">
         <appender-ref ref="RocketmqProxyAppender" />
+        <appender-ref ref="STDOUT" />
     </logger>
 
     <logger name="RocketmqProxyWatermark" additivity="false" level="INFO">

@@ -32,13 +32,13 @@ import static org.apache.rocketmq.common.MixAll.ROCKETMQ_HOME_PROPERTY;
  * 如果是cluster，请求进来，转发给对应的broker。
  * 如果是local，请求进来，判断是否为本broker，是则直接调用brokerController对应的processor的接口，否则，走网络请求调用对应的broker接口。
  */
-public class VateProxyStartup {
+public class VateProxyStartup2 {
     public static void main(String[] args) {
-        System.setProperty(ROCKETMQ_HOME_PROPERTY, "/Users/vate/softcache/idea-rocketMq-5-1");
+        System.setProperty(ROCKETMQ_HOME_PROPERTY, "/Users/vate/softcache/idea-rocketMq-5-2");
         ProxyStartup.main(new String[]{
-            "--brokerConfigPath", "/Users/vate/softcache/workspace_java/mines/rocketmq_official/distribution/conf/broker.conf",
+            "--brokerConfigPath", "/Users/vate/softcache/workspace_java/mines/rocketmq_official/distribution/conf/broker-2.conf",
             "--namesrvAddr", "127.0.0.1:9876",
-            "--proxyConfigPath", "/Users/vate/softcache/workspace_java/mines/rocketmq_official/distribution/conf/rmq-proxy.json",
+            "--proxyConfigPath", "/Users/vate/softcache/workspace_java/mines/rocketmq_official/distribution/conf/rmq-proxy-2.json",
             "--proxyMode", "local",
             });
     }
